@@ -1,19 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View, TextInput, Button } from 'react-native';
-import { supabaseClient } from '../../packages/shared-logic/supabaseClient';
+import {
+  StyleSheet,
+  Text,
+  View,
+  TextInput,
+  Button,
+  TouchableOpacity,
+  ActivityIndicator,
+} from 'react-native';
+import { supabaseClient } from './src/lib/supabaseClient';
 import MapScreen from './src/screens/MapScreen';
-
-interface Profile {
-  id: string;
-  role: 'driver' | 'client';
-  full_name?: string;
-  phone?: string;
-  rating?: number;
-  verification_status?: string;
-  language_tags?: string[];
-  email?: string;
-}
+import ProfileScreen from './src/screens/ProfileScreen';
+import type { Profile } from '../../packages/shared-logic/types';
 
 export default function App() {
   const [status, setStatus] = useState<'loading' | 'verified' | 'auth' | 'error'>('loading');
@@ -23,6 +22,7 @@ export default function App() {
   const [password, setPassword] = useState('');
   const [session, setSession] = useState<any>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [activeTab, setActiveTab] = useState<'map' | 'profile'>('map');
 
   useEffect(() => {
     const getSession = async () => {
@@ -32,6 +32,13 @@ export default function App() {
       setIsLoading(false);
     };
     getSession();
+
+    const { data: { subscription } } = supabaseClient.auth.onAuthStateChange(
+      (_event, session) => {
+        setSession(session ?? null);
+      }
+    );
+    return () => subscription.unsubscribe();
   }, []);
 
   useEffect(() => {
@@ -117,12 +124,60 @@ export default function App() {
     setIsLoading(false);
   };
 
+  const showMain = !isLoading && status === 'verified' && profile;
+
+  const handleSignOut = async () => {
+    await supabaseClient.auth.signOut();
+    setSession(null);
+    setProfile(null);
+    setStatus('auth');
+  };
+
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Umusare Profile Initialization</Text>
-      {isLoading && <Text style={styles.info}>Loading...</Text>}
-      {!isLoading && status === 'verified' && profile && (
-        <MapScreen />
+    <View style={showMain ? styles.mainContainer : styles.container}>
+      {!showMain && (
+        <>
+          <Text style={styles.title}>Umusare</Text>
+          {isLoading && (
+            <View style={styles.loadingFallback}>
+              <ActivityIndicator size="large" color="#F5F5F5" />
+              <Text style={styles.info}>Loading...</Text>
+            </View>
+          )}
+        </>
+      )}
+      {showMain && (
+        <>
+          <View style={styles.tabBar}>
+            <TouchableOpacity
+              style={[styles.tab, activeTab === 'map' && styles.tabActive]}
+              onPress={() => setActiveTab('map')}
+            >
+              <Text style={[styles.tabText, activeTab === 'map' && styles.tabTextActive]}>
+                Map
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.tab, activeTab === 'profile' && styles.tabActive]}
+              onPress={() => setActiveTab('profile')}
+            >
+              <Text style={[styles.tabText, activeTab === 'profile' && styles.tabTextActive]}>
+                Profile
+              </Text>
+            </TouchableOpacity>
+          </View>
+          <View style={styles.mainWrapper}>
+            {activeTab === 'map' ? (
+              <MapScreen />
+            ) : (
+              <ProfileScreen
+                profile={profile}
+                email={session?.user?.email}
+                onSignOut={handleSignOut}
+              />
+            )}
+          </View>
+        </>
       )}
       {!isLoading && (status === 'auth' || !session) && (
         <View style={styles.authBox}>
@@ -169,6 +224,39 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: 16,
   },
+  mainContainer: {
+    flex: 1,
+    width: '100%',
+    backgroundColor: 'white',
+  },
+  mainWrapper: {
+    flex: 1,
+    width: '100%',
+  },
+  tabBar: {
+    flexDirection: 'row',
+    backgroundColor: '#0A174E',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 8,
+  },
+  tab: {
+    paddingVertical: 8,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+  },
+  tabActive: {
+    backgroundColor: '#fff',
+  },
+  tabText: {
+    color: '#F5F5F5',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  tabTextActive: {
+    color: '#0A174E',
+  },
   title: {
     color: '#F5F5F5',
     fontSize: 22,
@@ -179,6 +267,10 @@ const styles = StyleSheet.create({
     color: '#00C851',
     fontSize: 18,
     marginBottom: 8,
+  },
+  loadingFallback: {
+    alignItems: 'center',
+    marginTop: 16,
   },
   info: {
     color: '#F5F5F5',
