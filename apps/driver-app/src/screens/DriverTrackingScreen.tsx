@@ -1,8 +1,30 @@
 import React, { useState } from 'react';
 import { StyleSheet, View, Text, Platform, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
 import MapView, { PROVIDER_DEFAULT, Marker } from 'react-native-maps';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabaseClient } from '../lib/supabaseClient';
 import type { Trip } from '../../../../packages/shared-logic/types';
+
+// Custom map style (Silver) for a clean minimalist look.
+const MAP_STYLE_SILVER = [
+  { elementType: 'geometry', stylers: [{ color: '#f5f5f5' }] },
+  { elementType: 'labels.icon', stylers: [{ visibility: 'off' }] },
+  { elementType: 'labels.text.fill', stylers: [{ color: '#616161' }] },
+  { elementType: 'labels.text.stroke', stylers: [{ color: '#f5f5f5' }] },
+  {
+    featureType: 'administrative.land_parcel',
+    elementType: 'labels.text.fill',
+    stylers: [{ color: '#bdbdbd' }],
+  },
+  { featureType: 'poi', elementType: 'geometry', stylers: [{ color: '#eeeeee' }] },
+  { featureType: 'poi', elementType: 'labels.text.fill', stylers: [{ color: '#757575' }] },
+  { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#ffffff' }] },
+  { featureType: 'road.arterial', elementType: 'labels.text.fill', stylers: [{ color: '#757575' }] },
+  { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#dadada' }] },
+  { featureType: 'road.highway', elementType: 'labels.text.fill', stylers: [{ color: '#616161' }] },
+  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#d8d8d8' }] },
+  { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#9e9e9e' }] },
+] as any;
 
 interface DriverTrackingScreenProps {
   trip: Trip;
@@ -11,6 +33,7 @@ interface DriverTrackingScreenProps {
 
 export default function DriverTrackingScreen({ trip, onComplete }: DriverTrackingScreenProps) {
   const [cancelling, setCancelling] = useState(false);
+  const insets = useSafeAreaInsets();
 
   const handleCancelTrip = () => {
     Alert.alert(
@@ -64,6 +87,7 @@ export default function DriverTrackingScreen({ trip, onComplete }: DriverTrackin
         provider={PROVIDER_DEFAULT}
         style={StyleSheet.absoluteFillObject}
         initialRegion={initialRegion}
+        customMapStyle={MAP_STYLE_SILVER}
         showsUserLocation={true}
       >
         {pickupLocation && (
@@ -81,7 +105,7 @@ export default function DriverTrackingScreen({ trip, onComplete }: DriverTrackin
           />
         )}
       </MapView>
-      <View style={styles.banner}>
+      <View style={[styles.banner, { bottom: insets.bottom + (Platform.OS === 'ios' ? 16 : 24) }]}>
         <Text style={styles.bannerText}>Heading to client — Meet at pickup location</Text>
         <TouchableOpacity
           style={styles.cancelButton}
@@ -106,7 +130,6 @@ const styles = StyleSheet.create({
   },
   banner: {
     position: 'absolute',
-    bottom: Platform.OS === 'ios' ? 40 : 24,
     left: 16,
     right: 16,
     backgroundColor: '#142850',

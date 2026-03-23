@@ -5,16 +5,29 @@ import {
   Text,
   View,
   TextInput,
-  Button,
   TouchableOpacity,
   ActivityIndicator,
 } from 'react-native';
+import {
+  SafeAreaProvider,
+  SafeAreaView,
+  useSafeAreaInsets,
+} from 'react-native-safe-area-context';
 import { supabaseClient } from './src/lib/supabaseClient';
 import DriverDashboard from './src/screens/DriverDashboard';
 import ProfileScreen from './src/screens/ProfileScreen';
+import PrimaryButton from './src/PrimaryButton';
 import type { Profile } from '../../packages/shared-logic/types';
 
 export default function App() {
+  return (
+    <SafeAreaProvider>
+      <DriverAppContent />
+    </SafeAreaProvider>
+  );
+}
+
+function DriverAppContent() {
   const [status, setStatus] = useState<'loading' | 'verified' | 'auth' | 'error'>('loading');
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -23,6 +36,8 @@ export default function App() {
   const [session, setSession] = useState<any>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'profile'>('dashboard');
+  const insets = useSafeAreaInsets();
+  const [isOnline, setIsOnline] = useState(true);
 
   useEffect(() => {
     const getSession = async () => {
@@ -128,7 +143,7 @@ export default function App() {
   };
 
   return (
-    <View style={showMain ? styles.mainContainer : styles.container}>
+    <SafeAreaView style={showMain ? styles.mainContainer : styles.container}>
       {!showMain && (
         <>
           <Text style={styles.title}>Umusare Driver</Text>
@@ -142,12 +157,14 @@ export default function App() {
       )}
       {showMain && (
         <>
-          <View style={styles.tabBar}>
+          <View style={[styles.tabBar, { paddingTop: Math.max(insets.top, 6) }]}>
             <TouchableOpacity
               style={[styles.tab, activeTab === 'dashboard' && styles.tabActive]}
               onPress={() => setActiveTab('dashboard')}
             >
-              <Text style={[styles.tabText, activeTab === 'dashboard' && styles.tabTextActive]}>
+              <Text
+                style={[styles.tabText, activeTab === 'dashboard' && styles.tabTextActive]}
+              >
                 Dashboard
               </Text>
             </TouchableOpacity>
@@ -155,14 +172,16 @@ export default function App() {
               style={[styles.tab, activeTab === 'profile' && styles.tabActive]}
               onPress={() => setActiveTab('profile')}
             >
-              <Text style={[styles.tabText, activeTab === 'profile' && styles.tabTextActive]}>
+              <Text
+                style={[styles.tabText, activeTab === 'profile' && styles.tabTextActive]}
+              >
                 Profile
               </Text>
             </TouchableOpacity>
           </View>
           <View style={styles.mainWrapper}>
             {activeTab === 'dashboard' ? (
-              <DriverDashboard />
+                <DriverDashboard isOnline={isOnline} />
             ) : (
               <ProfileScreen
                 profile={profile}
@@ -170,6 +189,22 @@ export default function App() {
                 onSignOut={handleSignOut}
               />
             )}
+          </View>
+
+          <View style={[styles.hudContainer, { bottom: insets.bottom + 12 }]}>
+            <TouchableOpacity
+              style={[
+                styles.hudToggle,
+                isOnline ? styles.hudToggleOnline : styles.hudToggleOffline,
+                isOnline ? styles.hudGlow : null,
+              ]}
+              onPress={() => setIsOnline((v) => !v)}
+              activeOpacity={0.9}
+            >
+              <Text style={styles.hudToggleText}>
+                {isOnline ? 'Online' : 'Offline'}
+              </Text>
+            </TouchableOpacity>
           </View>
         </>
       )}
@@ -191,8 +226,8 @@ export default function App() {
             onChangeText={setPassword}
           />
           <View style={styles.buttonRow}>
-            <Button title="Sign In" onPress={handleSignIn} />
-            <Button title="Sign Up" onPress={handleSignUp} />
+            <PrimaryButton label="Sign In" onPress={handleSignIn} style={styles.primaryButton} />
+            <PrimaryButton label="Sign Up" onPress={handleSignUp} style={styles.primaryButton} />
           </View>
           {errorMsg ? <Text style={styles.error}>{errorMsg}</Text> : null}
         </View>
@@ -201,12 +236,12 @@ export default function App() {
         <View>
           <Text style={styles.error}>❌ Error: {errorMsg}</Text>
           {errorMsg === 'Profile Not Found' && (
-            <Button title="Retry" onPress={handleRetry} />
+            <PrimaryButton label="Retry" onPress={handleRetry} />
           )}
         </View>
       )}
       <StatusBar style="dark" />
-    </View>
+    </SafeAreaView>
   );
 }
 
@@ -291,5 +326,39 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     width: '100%',
     marginBottom: 8,
+  },
+  primaryButton: {
+    flex: 1,
+    marginHorizontal: 6,
+  },
+  hudContainer: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    alignItems: 'center',
+  },
+  hudToggle: {
+    width: '100%',
+    borderRadius: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+  },
+  hudToggleOnline: {
+    backgroundColor: '#0047AB',
+  },
+  hudToggleOffline: {
+    backgroundColor: '#111827',
+  },
+  hudGlow: {
+    shadowColor: '#0047AB',
+    shadowOpacity: 0.45,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 0 },
+  },
+  hudToggleText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
   },
 });

@@ -28,7 +28,11 @@ async function reverseGeocode(
   return json.results[0].formatted_address || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
 }
 
-export default function DriverDashboard() {
+interface DriverDashboardProps {
+  isOnline: boolean;
+}
+
+export default function DriverDashboard({ isOnline }: DriverDashboardProps) {
   const [pendingTrips, setPendingTrips] = useState<Trip[]>([]);
   const [acceptingId, setAcceptingId] = useState<string | null>(null);
   const [activeTrip, setActiveTrip] = useState<Trip | null>(null);
@@ -55,6 +59,11 @@ export default function DriverDashboard() {
   }, []);
 
   useEffect(() => {
+    if (!isOnline) {
+      setPendingTrips([]);
+      return;
+    }
+
     const fetchInitial = async () => {
       const { data, error } = await supabaseClient
         .from('trips')
@@ -93,7 +102,7 @@ export default function DriverDashboard() {
     return () => {
       supabaseClient.removeChannel(channel);
     };
-  }, []);
+  }, [isOnline]);
 
   const latestPendingTrip = pendingTrips[pendingTrips.length - 1] ?? null;
 
@@ -106,6 +115,10 @@ export default function DriverDashboard() {
   }, [latestPendingTrip?.id, fetchAddress]);
 
   const handleAcceptMission = async (trip: Trip) => {
+    if (!isOnline) {
+      return;
+    }
+
     const { data: sessionData } = await supabaseClient.auth.getSession();
     const userId = sessionData?.session?.user?.id;
     if (!userId) {
@@ -148,7 +161,11 @@ export default function DriverDashboard() {
     <View style={styles.container}>
       <Text style={styles.title}>Driver Dashboard</Text>
       <Text style={styles.subtitle}>
-        {hasPendingMission ? 'New mission available' : 'Waiting for missions...'}
+        {!isOnline
+          ? 'Offline — mission intake paused'
+          : hasPendingMission
+            ? 'New mission available'
+            : 'Waiting for missions...'}
       </Text>
 
       <Modal

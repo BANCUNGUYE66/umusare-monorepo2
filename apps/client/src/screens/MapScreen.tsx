@@ -11,15 +11,55 @@ import {
   Keyboard,
   Linking,
   Alert,
+  Animated,
+  Easing,
 } from 'react-native';
 import MapView, { PROVIDER_DEFAULT, Marker, MapPressEvent } from 'react-native-maps';
 import * as Location from 'expo-location';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabaseClient } from '../lib/supabaseClient';
 import { calculateBaseFee } from '../../../../packages/shared-logic/calculateBaseFee';
+import PrimaryButton from '../PrimaryButton';
 import type { Profile } from '../../../../packages/shared-logic/types';
 
 const KIGALI_CENTER = { latitude: -1.9441, longitude: 30.0899 };
 const GOOGLE_GEOCODE_URL = 'https://maps.googleapis.com/maps/api/geocode/json';
+
+// Custom map styles for a more professional look.
+// Switch MAP_STYLE to MAP_STYLE_SILVER if you prefer the silver theme.
+const MAP_STYLE_SILVER = [
+  { elementType: 'geometry', stylers: [{ color: '#f5f5f5' }] },
+  { elementType: 'labels.icon', stylers: [{ visibility: 'off' }] },
+  { elementType: 'labels.text.fill', stylers: [{ color: '#616161' }] },
+  { elementType: 'labels.text.stroke', stylers: [{ color: '#f5f5f5' }] },
+  { featureType: 'administrative.land_parcel', elementType: 'labels.text.fill', stylers: [{ color: '#bdbdbd' }] },
+  { featureType: 'poi', elementType: 'geometry', stylers: [{ color: '#eeeeee' }] },
+  { featureType: 'poi', elementType: 'labels.text.fill', stylers: [{ color: '#757575' }] },
+  { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#ffffff' }] },
+  { featureType: 'road.arterial', elementType: 'labels.text.fill', stylers: [{ color: '#757575' }] },
+  { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#dadada' }] },
+  { featureType: 'road.highway', elementType: 'labels.text.fill', stylers: [{ color: '#616161' }] },
+  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#d8d8d8' }] },
+  { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#9e9e9e' }] },
+] as any;
+
+const MAP_STYLE_NIGHT = [
+  { elementType: 'geometry', stylers: [{ color: '#242f3e' }] },
+  { elementType: 'labels.text.stroke', stylers: [{ color: '#242f3e' }] },
+  { elementType: 'labels.text.fill', stylers: [{ color: '#746855' }] },
+  { featureType: 'administrative.locality', elementType: 'labels.text.fill', stylers: [{ color: '#d59563' }] },
+  { featureType: 'poi', elementType: 'labels.text.fill', stylers: [{ color: '#d59563' }] },
+  { featureType: 'poi.park', elementType: 'geometry', stylers: [{ color: '#1f6d4a' }] },
+  { featureType: 'poi.park', elementType: 'labels.text.fill', stylers: [{ color: '#6b9a6b' }] },
+  { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#38414e' }] },
+  { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: '#212a37' }] },
+  { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#746855' }] },
+  { featureType: 'road.highway', elementType: 'geometry.stroke', stylers: [{ color: '#1f2835' }] },
+  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#17263c' }] },
+  { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#515c6d' }] },
+] as any;
+
+const MAP_STYLE = MAP_STYLE_SILVER;
 
 // Simple Haversine distance in km (rough approximation)
 function distanceKm(
@@ -64,6 +104,8 @@ async function geocodePlace(query: string, apiKey: string): Promise<{ lat: numbe
 
 export default function MapScreen() {
   const mapRef = useRef<MapView>(null);
+  const insets = useSafeAreaInsets();
+  const confirmAnim = useRef(new Animated.Value(0)).current;
   const [pickupLocation, setPickupLocation] = useState<{
     latitude: number;
     longitude: number;
@@ -83,6 +125,15 @@ export default function MapScreen() {
     latitude: number;
     longitude: number;
   } | null>(null);
+
+  useEffect(() => {
+    Animated.timing(confirmAnim, {
+      toValue: destinationLocation ? 1 : 0,
+      duration: 220,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [destinationLocation, confirmAnim]);
 
   useEffect(() => {
     (async () => {
@@ -324,6 +375,7 @@ export default function MapScreen() {
         provider={PROVIDER_DEFAULT}
         style={StyleSheet.absoluteFillObject}
         initialRegion={initialRegion}
+        customMapStyle={MAP_STYLE}
         showsUserLocation={true}
         onPress={handleMapPress}
       >
@@ -343,36 +395,51 @@ export default function MapScreen() {
         )}
       </MapView>
 
-      <View style={styles.searchContainer}>
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Where to?"
-          placeholderTextColor="#999"
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-          onSubmitEditing={handleSearchSubmit}
-          returnKeyType="search"
-          editable={!isGeocoding}
-        />
-        {isGeocoding && (
-          <ActivityIndicator size="small" style={styles.searchSpinner} />
+      <View style={[styles.bottomSheet, { bottom: insets.bottom + 12 }]}>
+        <View style={styles.searchRow}>
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Where to?"
+            placeholderTextColor="#9CA3AF"
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            onSubmitEditing={handleSearchSubmit}
+            returnKeyType="search"
+            editable={!isGeocoding}
+          />
+          {isGeocoding ? (
+            <ActivityIndicator size="small" color="#0047AB" />
+          ) : null}
+        </View>
+
+        {destinationLocation && (
+          <Animated.View
+            style={[
+              styles.confirmButtonWrap,
+              {
+                opacity: confirmAnim,
+                transform: [
+                  {
+                    translateY: confirmAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [14, 0],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          >
+            <PrimaryButton
+              label="Confirm Destination"
+              onPress={handleConfirmDestination}
+              style={styles.confirmButton}
+            />
+          </Animated.View>
         )}
       </View>
 
-      {destinationLocation && (
-        <View style={styles.confirmContainer}>
-          <TouchableOpacity
-            style={styles.confirmButton}
-            onPress={handleConfirmDestination}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.confirmButtonText}>Confirm Destination</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
       {driverProfile && (
-        <View style={styles.driverCard}>
+        <View style={[styles.driverCard, { bottom: insets.bottom + 140 }]}>
           <View style={styles.driverCardRow}>
             <View style={styles.driverCardMain}>
               <View style={styles.driverNameRow}>
@@ -425,59 +492,36 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: 'white',
   },
-  searchContainer: {
+  bottomSheet: {
     position: 'absolute',
-    top: Platform.OS === 'ios' ? 60 : 48,
     left: 16,
     right: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'white',
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    padding: 14,
+    backgroundColor: '#fff',
+    borderRadius: 16,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
+    shadowOpacity: 0.1,
+    shadowRadius: 10,
     elevation: 4,
+  },
+  searchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
   },
   searchInput: {
     fontSize: 16,
-    color: '#333',
+    color: '#111827',
     padding: 0,
     flex: 1,
   },
-  searchSpinner: {
-    position: 'absolute',
-    right: 16,
-    top: '50%',
-    marginTop: -10,
-  },
-  confirmContainer: {
-    position: 'absolute',
-    bottom: Platform.OS === 'ios' ? 40 : 24,
-    left: 16,
-    right: 16,
-    alignItems: 'center',
-  },
   confirmButton: {
-    backgroundColor: '#0A174E',
-    paddingVertical: 16,
-    paddingHorizontal: 32,
-    borderRadius: 12,
-    minWidth: 200,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 4,
+    marginTop: 12,
+    width: '100%',
   },
-  confirmButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
+  confirmButtonWrap: {
+    width: '100%',
   },
   overlay: {
     flex: 1,

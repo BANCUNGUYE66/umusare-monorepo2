@@ -5,16 +5,29 @@ import {
   Text,
   View,
   TextInput,
-  Button,
   TouchableOpacity,
   ActivityIndicator,
 } from 'react-native';
+import {
+  SafeAreaProvider,
+  SafeAreaView,
+  useSafeAreaInsets,
+} from 'react-native-safe-area-context';
 import { supabaseClient } from './src/lib/supabaseClient';
 import MapScreen from './src/screens/MapScreen';
 import ProfileScreen from './src/screens/ProfileScreen';
+import PrimaryButton from './src/PrimaryButton';
 import type { Profile } from '../../packages/shared-logic/types';
 
 export default function App() {
+  return (
+    <SafeAreaProvider>
+      <ClientAppContent />
+    </SafeAreaProvider>
+  );
+}
+
+function ClientAppContent() {
   const [status, setStatus] = useState<'loading' | 'verified' | 'auth' | 'error'>('loading');
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -23,6 +36,7 @@ export default function App() {
   const [session, setSession] = useState<any>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [activeTab, setActiveTab] = useState<'map' | 'profile'>('map');
+  const insets = useSafeAreaInsets();
 
   useEffect(() => {
     const getSession = async () => {
@@ -134,85 +148,90 @@ export default function App() {
   };
 
   return (
-    <View style={showMain ? styles.mainContainer : styles.container}>
-      {!showMain && (
-        <>
-          <Text style={styles.title}>Umusare</Text>
-          {isLoading && (
-            <View style={styles.loadingFallback}>
-              <ActivityIndicator size="large" color="#F5F5F5" />
-              <Text style={styles.info}>Loading...</Text>
+    <SafeAreaView style={showMain ? styles.mainContainer : styles.container}>
+        {!showMain && (
+          <>
+            <Text style={styles.title}>Umusare</Text>
+            {isLoading && (
+              <View style={styles.loadingFallback}>
+                <ActivityIndicator size="large" color="#F5F5F5" />
+                <Text style={styles.info}>Loading...</Text>
+              </View>
+            )}
+          </>
+        )}
+        {showMain && (
+          <>
+          <View style={[styles.tabBar, { paddingTop: Math.max(insets.top, 6) }]}>
+              <TouchableOpacity
+                style={[styles.tab, activeTab === 'map' && styles.tabActive]}
+                onPress={() => setActiveTab('map')}
+              >
+                <Text style={[styles.tabText, activeTab === 'map' && styles.tabTextActive]}>
+                  Map
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.tab, activeTab === 'profile' && styles.tabActive]}
+                onPress={() => setActiveTab('profile')}
+              >
+                <Text
+                  style={[
+                    styles.tabText,
+                    activeTab === 'profile' && styles.tabTextActive,
+                  ]}
+                >
+                  Profile
+                </Text>
+              </TouchableOpacity>
             </View>
-          )}
-        </>
-      )}
-      {showMain && (
-        <>
-          <View style={styles.tabBar}>
-            <TouchableOpacity
-              style={[styles.tab, activeTab === 'map' && styles.tabActive]}
-              onPress={() => setActiveTab('map')}
-            >
-              <Text style={[styles.tabText, activeTab === 'map' && styles.tabTextActive]}>
-                Map
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.tab, activeTab === 'profile' && styles.tabActive]}
-              onPress={() => setActiveTab('profile')}
-            >
-              <Text style={[styles.tabText, activeTab === 'profile' && styles.tabTextActive]}>
-                Profile
-              </Text>
-            </TouchableOpacity>
+            <View style={styles.mainWrapper}>
+              {activeTab === 'map' ? (
+                <MapScreen />
+              ) : (
+                <ProfileScreen
+                  profile={profile}
+                  email={session?.user?.email}
+                  onSignOut={handleSignOut}
+                />
+              )}
+            </View>
+          </>
+        )}
+        {!isLoading && (status === 'auth' || !session) && (
+          <View style={styles.authBox}>
+            <Text style={styles.info}>Sign In / Sign Up</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Email"
+              value={email}
+              autoCapitalize="none"
+              onChangeText={setEmail}
+            />
+            <TextInput
+              style={styles.input}
+              placeholder="Password"
+              value={password}
+              secureTextEntry
+              onChangeText={setPassword}
+            />
+            <View style={styles.buttonRow}>
+              <PrimaryButton label="Sign In" onPress={handleSignIn} style={styles.primaryButton} />
+              <PrimaryButton label="Sign Up" onPress={handleSignUp} style={styles.primaryButton} />
+            </View>
+            {errorMsg ? <Text style={styles.error}>{errorMsg}</Text> : null}
           </View>
-          <View style={styles.mainWrapper}>
-            {activeTab === 'map' ? (
-              <MapScreen />
-            ) : (
-              <ProfileScreen
-                profile={profile}
-                email={session?.user?.email}
-                onSignOut={handleSignOut}
-              />
+        )}
+        {!isLoading && status === 'error' && (
+          <View>
+            <Text style={styles.error}>❌ Error: {errorMsg}</Text>
+            {errorMsg === 'Profile Not Found' && (
+              <PrimaryButton label="Retry" onPress={handleRetry} />
             )}
           </View>
-        </>
-      )}
-      {!isLoading && (status === 'auth' || !session) && (
-        <View style={styles.authBox}>
-          <Text style={styles.info}>Sign In / Sign Up</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Email"
-            value={email}
-            autoCapitalize="none"
-            onChangeText={setEmail}
-          />
-          <TextInput
-            style={styles.input}
-            placeholder="Password"
-            value={password}
-            secureTextEntry
-            onChangeText={setPassword}
-          />
-          <View style={styles.buttonRow}>
-            <Button title="Sign In" onPress={handleSignIn} />
-            <Button title="Sign Up" onPress={handleSignUp} />
-          </View>
-          {errorMsg ? <Text style={styles.error}>{errorMsg}</Text> : null}
-        </View>
-      )}
-      {!isLoading && status === 'error' && (
-        <View>
-          <Text style={styles.error}>❌ Error: {errorMsg}</Text>
-          {errorMsg === 'Profile Not Found' && (
-            <Button title="Retry" onPress={handleRetry} />
-          )}
-        </View>
-      )}
-      <StatusBar style="dark" />
-    </View>
+        )}
+        <StatusBar style="dark" />
+    </SafeAreaView>
   );
 }
 
@@ -302,5 +321,9 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     width: '100%',
     marginBottom: 8,
+  },
+  primaryButton: {
+    flex: 1,
+    marginHorizontal: 6,
   },
 });
