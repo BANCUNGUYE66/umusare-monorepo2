@@ -30,9 +30,10 @@ async function reverseGeocode(
 
 interface DriverDashboardProps {
   isOnline: boolean;
+  offlineReason?: string;
 }
 
-export default function DriverDashboard({ isOnline }: DriverDashboardProps) {
+export default function DriverDashboard({ isOnline, offlineReason }: DriverDashboardProps) {
   const [pendingTrips, setPendingTrips] = useState<Trip[]>([]);
   const [acceptingId, setAcceptingId] = useState<string | null>(null);
   const [activeTrip, setActiveTrip] = useState<Trip | null>(null);
@@ -162,7 +163,7 @@ export default function DriverDashboard({ isOnline }: DriverDashboardProps) {
       <Text style={styles.title}>Driver Dashboard</Text>
       <Text style={styles.subtitle}>
         {!isOnline
-          ? 'Offline — mission intake paused'
+          ? offlineReason || 'Offline — mission intake paused'
           : hasPendingMission
             ? 'New mission available'
             : 'Waiting for missions...'}

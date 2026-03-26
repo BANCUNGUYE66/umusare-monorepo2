@@ -13,6 +13,7 @@ import {
   Alert,
   Animated,
   Easing,
+  Vibration,
 } from 'react-native';
 import MapView, { PROVIDER_DEFAULT, Marker, MapPressEvent } from 'react-native-maps';
 import * as Location from 'expo-location';
@@ -106,6 +107,7 @@ export default function MapScreen() {
   const mapRef = useRef<MapView>(null);
   const insets = useSafeAreaInsets();
   const confirmAnim = useRef(new Animated.Value(0)).current;
+  const completionBannerTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [pickupLocation, setPickupLocation] = useState<{
     latitude: number;
     longitude: number;
@@ -125,6 +127,13 @@ export default function MapScreen() {
     latitude: number;
     longitude: number;
   } | null>(null);
+  const [fareModalVisible, setFareModalVisible] = useState(false);
+  const [fareAmount, setFareAmount] = useState<number>(0);
+  const [confirmingFare, setConfirmingFare] = useState(false);
+  const [statusBanner, setStatusBanner] = useState<{
+    text: string;
+    tone: 'info' | 'success';
+  } | null>(null);
 
   useEffect(() => {
     Animated.timing(confirmAnim, {
@@ -134,6 +143,13 @@ export default function MapScreen() {
       useNativeDriver: true,
     }).start();
   }, [destinationLocation, confirmAnim]);
+
+  const showStatusBanner = (
+    text: string,
+    tone: 'info' | 'success' = 'info'
+  ) => {
+    setStatusBanner({ text, tone });
+  };
 
   useEffect(() => {
     (async () => {
@@ -216,8 +232,40 @@ export default function MapScreen() {
     }
 
     setCurrentTripId(inserted?.id ?? null);
+    setFareAmount(base_fee);
     setSearchOverlayMessage('Searching for Driver...');
     setIsSearching(true);
+  };
+
+  const handleConfirmFare = async () => {
+    if (!currentTripId) return;
+    if (!Number.isFinite(fareAmount) || fareAmount <= 0) {
+      Alert.alert('Invalid amount', 'Please enter a valid amount.');
+      return;
+    }
+
+    setConfirmingFare(true);
+    try {
+      const { error } = await supabaseClient
+        .from('trips')
+        .update({
+          final_fare: fareAmount,
+          client_payment_confirmed: true,
+        })
+        .eq('id', currentTripId);
+      if (error) {
+        Alert.alert('Error', `Could not confirm payment: ${error.message}`);
+        return;
+      }
+      setFareModalVisible(false);
+      showStatusBanner('Payment Confirmed', 'success');
+      setCurrentTripId(null);
+      setDriverId(null);
+      setDriverProfile(null);
+      setDriverLocation(null);
+    } finally {
+      setConfirmingFare(false);
+    }
   };
 
   useEffect(() => {
@@ -230,8 +278,19 @@ export default function MapScreen() {
         { event: 'UPDATE', schema: 'public', table: 'trips', filter: `id=eq.${currentTripId}` },
         (payload) => {
           const trip = payload.new as { status: string; driver_id?: string | null };
-          if (trip.status === 'active') {
-            setSearchOverlayMessage('Driver is coming!');
+          if (trip.status === 'arrived') {
+            setIsSearching(false);
+            Vibration.vibrate(300);
+            showStatusBanner('Your Driver is Here!', 'success');
+          } else if (trip.status === 'active') {
+            setIsSearching(false);
+            showStatusBanner('Your Driver is Coming');
+            if (trip.driver_id) {
+              setDriverId(trip.driver_id);
+            }
+          } else if (trip.status === 'ongoing') {
+            setIsSearching(false);
+            showStatusBanner('Trip Started', 'success');
             if (trip.driver_id) {
               setDriverId(trip.driver_id);
             }
@@ -242,6 +301,30 @@ export default function MapScreen() {
             setDriverLocation(null);
             setCurrentTripId(null);
             setIsSearching(false);
+            setStatusBanner(null);
+            setFareModalVisible(false);
+          } else if (trip.status === 'completed') {
+            setIsSearching(false);
+            showStatusBanner('Trip Ended. Thanks for riding with us!', 'success');
+            if (!trip.client_payment_confirmed) {
+              const suggestedFare = Number((trip as any).final_fare ?? (trip as any).base_fee ?? 0);
+              if (suggestedFare > 0) {
+                setFareAmount(suggestedFare);
+              }
+              setFareModalVisible(true);
+            } else {
+              setDriverId(null);
+              setDriverProfile(null);
+              setDriverLocation(null);
+              setCurrentTripId(null);
+              setFareModalVisible(false);
+            }
+            if (completionBannerTimeoutRef.current) {
+              clearTimeout(completionBannerTimeoutRef.current);
+            }
+            completionBannerTimeoutRef.current = setTimeout(() => {
+              setStatusBanner(null);
+            }, 4000);
           }
         }
       )
@@ -343,7 +426,20 @@ export default function MapScreen() {
     setDriverId(null);
     setDriverProfile(null);
     setDriverLocation(null);
+    setStatusBanner(null);
+    if (completionBannerTimeoutRef.current) {
+      clearTimeout(completionBannerTimeoutRef.current);
+      completionBannerTimeoutRef.current = null;
+    }
   };
+
+  useEffect(() => {
+    return () => {
+      if (completionBannerTimeoutRef.current) {
+        clearTimeout(completionBannerTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const etaMins =
     pickupLocation && driverLocation
@@ -475,11 +571,46 @@ export default function MapScreen() {
         </View>
       )}
 
+      {statusBanner && (
+        <View
+          style={[
+            styles.statusBanner,
+            statusBanner.tone === 'success' ? styles.statusBannerSuccess : styles.statusBannerInfo,
+            { top: insets.top + 72 },
+          ]}
+        >
+          <Text style={styles.statusBannerText}>{statusBanner.text}</Text>
+        </View>
+      )}
+
       <Modal visible={isSearching} transparent animationType="fade">
         <View style={styles.overlay}>
           <View style={styles.overlayContent}>
             <ActivityIndicator size="large" color="#fff" />
             <Text style={styles.overlayText}>{searchOverlayMessage}</Text>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={fareModalVisible} transparent animationType="slide">
+        <View style={styles.overlay}>
+          <View style={styles.fareModal}>
+            <Text style={styles.fareTitle}>Confirm Trip Amount</Text>
+            <Text style={styles.fareSubtitle}>
+              Trip ended. Confirm amount to finalize payment.
+            </Text>
+            <View style={styles.fareAmountBox}>
+              <Text style={styles.fareAmountLabel}>Amount to pay</Text>
+              <Text style={styles.fareAmountValue}>
+                {fareAmount.toLocaleString()} RWF
+              </Text>
+            </View>
+            <PrimaryButton
+              label={confirmingFare ? 'Confirming...' : 'Confirm Amount'}
+              onPress={handleConfirmFare}
+              disabled={confirmingFare}
+              style={styles.fareConfirmButton}
+            />
           </View>
         </View>
       </Modal>
@@ -540,6 +671,46 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     marginTop: 16,
+  },
+  fareModal: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 20,
+    width: '88%',
+    maxWidth: 360,
+  },
+  fareTitle: {
+    color: '#0F172A',
+    fontSize: 20,
+    fontWeight: '700',
+  },
+  fareSubtitle: {
+    color: '#64748B',
+    fontSize: 14,
+    marginTop: 8,
+    marginBottom: 14,
+  },
+  fareAmountBox: {
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 12,
+    backgroundColor: '#F8FAFC',
+  },
+  fareAmountLabel: {
+    color: '#64748B',
+    fontSize: 12,
+    marginBottom: 4,
+  },
+  fareAmountValue: {
+    color: '#0F172A',
+    fontSize: 22,
+    fontWeight: '800',
+  },
+  fareConfirmButton: {
+    width: '100%',
   },
   driverCard: {
     position: 'absolute',
@@ -624,5 +795,31 @@ const styles = StyleSheet.create({
   carMarkerText: {
     fontSize: 14,
     color: '#FBBF24',
+  },
+  statusBanner: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 4,
+    alignItems: 'center',
+  },
+  statusBannerInfo: {
+    backgroundColor: '#0047AB',
+    shadowColor: '#0047AB',
+  },
+  statusBannerSuccess: {
+    backgroundColor: '#059669',
+    shadowColor: '#059669',
+  },
+  statusBannerText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
   },
 });

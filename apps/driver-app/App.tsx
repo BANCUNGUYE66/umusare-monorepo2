@@ -16,6 +16,7 @@ import {
 import { supabaseClient } from './src/lib/supabaseClient';
 import DriverDashboard from './src/screens/DriverDashboard';
 import ProfileScreen from './src/screens/ProfileScreen';
+import WalletScreen from './src/screens/WalletScreen';
 import PrimaryButton from './src/PrimaryButton';
 import type { Profile } from '../../packages/shared-logic/types';
 
@@ -35,9 +36,10 @@ function DriverAppContent() {
   const [password, setPassword] = useState('');
   const [session, setSession] = useState<any>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'profile'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'wallet' | 'profile'>('dashboard');
   const insets = useSafeAreaInsets();
   const [isOnline, setIsOnline] = useState(true);
+  const [commissionDue, setCommissionDue] = useState(0);
 
   useEffect(() => {
     const getSession = async () => {
@@ -71,6 +73,7 @@ function DriverAppContent() {
         if (profileError) throw profileError;
         if (profiles && profiles.length > 0) {
           setProfile(profiles[0]);
+          setCommissionDue(Number((profiles[0] as any)?.commission_due ?? 0));
           setStatus('verified');
         }
       } catch (err: any) {
@@ -90,6 +93,28 @@ function DriverAppContent() {
     }, 5000);
     return () => clearTimeout(timeoutId);
   }, [session]);
+
+  useEffect(() => {
+    const userId = session?.user?.id;
+    if (!userId) return;
+
+    const channel = supabaseClient
+      .channel(`driver-profile-${userId}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'profiles', filter: `id=eq.${userId}` },
+        (payload) => {
+          const updated = payload.new as any;
+          setCommissionDue(Number(updated?.commission_due ?? 0));
+          setProfile((prev) => ({ ...(prev || {}), ...updated } as Profile));
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabaseClient.removeChannel(channel);
+    };
+  }, [session?.user?.id]);
 
   const handleSignIn = async () => {
     setIsLoading(true);
@@ -142,6 +167,16 @@ function DriverAppContent() {
     setStatus('auth');
   };
 
+  const handleCommissionCleared = () => {
+    setCommissionDue(0);
+  };
+
+  const canTakeTrips = isOnline && commissionDue <= 0;
+  const offlineReason =
+    commissionDue > 0
+      ? 'Commission pending. Clear payment in Wallet before next trip.'
+      : undefined;
+
   return (
     <SafeAreaView style={showMain ? styles.mainContainer : styles.container}>
       {!showMain && (
@@ -169,6 +204,16 @@ function DriverAppContent() {
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
+              style={[styles.tab, activeTab === 'wallet' && styles.tabActive]}
+              onPress={() => setActiveTab('wallet')}
+            >
+              <Text
+                style={[styles.tabText, activeTab === 'wallet' && styles.tabTextActive]}
+              >
+                Wallet
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
               style={[styles.tab, activeTab === 'profile' && styles.tabActive]}
               onPress={() => setActiveTab('profile')}
             >
@@ -181,7 +226,9 @@ function DriverAppContent() {
           </View>
           <View style={styles.mainWrapper}>
             {activeTab === 'dashboard' ? (
-                <DriverDashboard isOnline={isOnline} />
+              <DriverDashboard isOnline={canTakeTrips} offlineReason={offlineReason} />
+            ) : activeTab === 'wallet' ? (
+              <WalletScreen onCommissionCleared={handleCommissionCleared} />
             ) : (
               <ProfileScreen
                 profile={profile}
