@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
+import * as Location from 'expo-location';
 import {
   StyleSheet,
   Text,
@@ -158,8 +159,6 @@ function DriverAppContent() {
     setIsLoading(false);
   };
 
-  const showMain = !isLoading && status === 'verified' && profile;
-
   const handleSignOut = async () => {
     await supabaseClient.auth.signOut();
     setSession(null);
@@ -176,6 +175,59 @@ function DriverAppContent() {
     commissionDue > 0
       ? 'Commission pending. Clear payment in Wallet before next trip.'
       : undefined;
+
+  const showMain = !isLoading && status === 'verified' && profile;
+
+  useEffect(() => {
+    const uid = session?.user?.id;
+    if (!uid || !showMain) return;
+
+    const dbOnline = isOnline && commissionDue <= 0;
+
+    const syncPresence = async () => {
+      await supabaseClient.from('profiles').update({ is_online: dbOnline }).eq('id', uid);
+    };
+
+    syncPresence();
+
+    let cancelled = false;
+    let sub: Location.LocationSubscription | null = null;
+
+    if (dbOnline) {
+      (async () => {
+        const { status: perm } = await Location.requestForegroundPermissionsAsync();
+        if (perm !== 'granted' || cancelled) return;
+
+        sub = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.Balanced,
+            distanceInterval: 45,
+            timeInterval: 12000,
+          },
+          async (loc) => {
+            if (cancelled) return;
+            await supabaseClient
+              .from('profiles')
+              .update({
+                location_lat: loc.coords.latitude,
+                location_lng: loc.coords.longitude,
+                is_online: true,
+              })
+              .eq('id', uid);
+          }
+        );
+        if (cancelled) {
+          sub.remove();
+          sub = null;
+        }
+      })();
+    }
+
+    return () => {
+      cancelled = true;
+      sub?.remove();
+    };
+  }, [session?.user?.id, showMain, isOnline, commissionDue]);
 
   return (
     <SafeAreaView style={showMain ? styles.mainContainer : styles.container}>

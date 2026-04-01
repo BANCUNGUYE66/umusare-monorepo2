@@ -1,9 +1,12 @@
+export type DriverTier = 'normal' | 'silver' | 'gold' | 'diamond';
+
 export interface Profile {
   id: string;
   role: 'driver' | 'client';
   full_name?: string;
   phone?: string;
   rating?: number;
+  rating_count?: number;
   verification_status?: string;
   language_tags?: string[];
   email?: string;
@@ -11,6 +14,12 @@ export interface Profile {
   plate_number?: string;
   wallet_balance?: number;
   commission_due?: number;
+  /** Driver program tier — affects dispatch priority when online */
+  driver_tier?: DriverTier | string;
+  completed_trips_count?: number;
+  is_online?: boolean;
+  location_lat?: number;
+  location_lng?: number;
 }
 
 export interface Trip {

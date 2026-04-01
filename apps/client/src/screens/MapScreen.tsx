@@ -20,6 +20,7 @@ import * as Location from 'expo-location';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabaseClient } from '../lib/supabaseClient';
 import { calculateBaseFee } from '../../../../packages/shared-logic/calculateBaseFee';
+import { tierAccentColor, tierDisplayName } from '../../../../packages/shared-logic/driverTier';
 import PrimaryButton from '../PrimaryButton';
 import type { Profile } from '../../../../packages/shared-logic/types';
 
@@ -130,6 +131,10 @@ export default function MapScreen() {
   const [fareModalVisible, setFareModalVisible] = useState(false);
   const [fareAmount, setFareAmount] = useState<number>(0);
   const [confirmingFare, setConfirmingFare] = useState(false);
+  const [ratingModalVisible, setRatingModalVisible] = useState(false);
+  const [ratingStars, setRatingStars] = useState(0);
+  const [pendingRatingTripId, setPendingRatingTripId] = useState<string | null>(null);
+  const [submittingRating, setSubmittingRating] = useState(false);
   const [statusBanner, setStatusBanner] = useState<{
     text: string;
     tone: 'info' | 'success';
@@ -237,12 +242,22 @@ export default function MapScreen() {
     setIsSearching(true);
   };
 
+  const clearActiveTripUi = () => {
+    setCurrentTripId(null);
+    setDriverId(null);
+    setDriverProfile(null);
+    setDriverLocation(null);
+  };
+
   const handleConfirmFare = async () => {
     if (!currentTripId) return;
     if (!Number.isFinite(fareAmount) || fareAmount <= 0) {
       Alert.alert('Invalid amount', 'Please enter a valid amount.');
       return;
     }
+
+    const tripIdForRating = currentTripId;
+    const driverIdForRating = driverId;
 
     setConfirmingFare(true);
     try {
@@ -259,13 +274,45 @@ export default function MapScreen() {
       }
       setFareModalVisible(false);
       showStatusBanner('Payment Confirmed', 'success');
-      setCurrentTripId(null);
-      setDriverId(null);
-      setDriverProfile(null);
-      setDriverLocation(null);
+      if (tripIdForRating && driverIdForRating) {
+        setPendingRatingTripId(tripIdForRating);
+        setRatingStars(0);
+        setRatingModalVisible(true);
+      } else {
+        clearActiveTripUi();
+      }
     } finally {
       setConfirmingFare(false);
     }
+  };
+
+  const handleSubmitRating = async () => {
+    if (!pendingRatingTripId || ratingStars < 1) {
+      Alert.alert('Rating', 'Please tap the stars to rate your driver (1–5).');
+      return;
+    }
+    setSubmittingRating(true);
+    try {
+      const { error } = await supabaseClient.rpc('submit_trip_rating', {
+        p_trip_id: pendingRatingTripId,
+        p_stars: ratingStars,
+      });
+      if (error) {
+        Alert.alert('Error', error.message || 'Could not save rating.');
+        return;
+      }
+      setRatingModalVisible(false);
+      setPendingRatingTripId(null);
+      clearActiveTripUi();
+    } finally {
+      setSubmittingRating(false);
+    }
+  };
+
+  const handleSkipRating = () => {
+    setRatingModalVisible(false);
+    setPendingRatingTripId(null);
+    clearActiveTripUi();
   };
 
   useEffect(() => {
@@ -277,7 +324,13 @@ export default function MapScreen() {
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'trips', filter: `id=eq.${currentTripId}` },
         (payload) => {
-          const trip = payload.new as { status: string; driver_id?: string | null };
+          const trip = payload.new as {
+            status: string;
+            driver_id?: string | null;
+            client_payment_confirmed?: boolean;
+            final_fare?: number;
+            base_fee?: number;
+          };
           if (trip.status === 'arrived') {
             setIsSearching(false);
             Vibration.vibrate(300);
@@ -307,7 +360,7 @@ export default function MapScreen() {
             setIsSearching(false);
             showStatusBanner('Trip Ended. Thanks for riding with us!', 'success');
             if (!trip.client_payment_confirmed) {
-              const suggestedFare = Number((trip as any).final_fare ?? (trip as any).base_fee ?? 0);
+              const suggestedFare = Number(trip.final_fare ?? trip.base_fee ?? 0);
               if (suggestedFare > 0) {
                 setFareAmount(suggestedFare);
               }
@@ -542,6 +595,26 @@ export default function MapScreen() {
                 <Text style={styles.driverName}>
                   {driverProfile.full_name || 'Your driver'}
                 </Text>
+                {(driverProfile as any).driver_tier &&
+                (driverProfile as any).driver_tier !== 'normal' ? (
+                  <View
+                    style={[
+                      styles.tierPill,
+                      {
+                        borderColor: tierAccentColor((driverProfile as any).driver_tier),
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.tierPillText,
+                        { color: tierAccentColor((driverProfile as any).driver_tier) },
+                      ]}
+                    >
+                      {tierDisplayName((driverProfile as any).driver_tier)}
+                    </Text>
+                  </View>
+                ) : null}
                 <Text style={styles.etaText}>
                   Arriving in {etaMins} {etaMins === 1 ? 'min' : 'mins'}
                 </Text>
@@ -611,6 +684,35 @@ export default function MapScreen() {
               disabled={confirmingFare}
               style={styles.fareConfirmButton}
             />
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={ratingModalVisible} transparent animationType="fade">
+        <View style={styles.overlay}>
+          <View style={styles.ratingModal}>
+            <Text style={styles.ratingTitle}>Rate your driver</Text>
+            <Text style={styles.ratingSubtitle}>How was your trip?</Text>
+            <View style={styles.starsRow}>
+              {[1, 2, 3, 4, 5].map((n) => (
+                <TouchableOpacity
+                  key={n}
+                  onPress={() => setRatingStars(n)}
+                  hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+                >
+                  <Text style={styles.starGlyph}>{n <= ratingStars ? '★' : '☆'}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <PrimaryButton
+              label={submittingRating ? 'Sending...' : 'Submit rating'}
+              onPress={handleSubmitRating}
+              disabled={submittingRating || ratingStars < 1}
+              style={styles.ratingSubmitButton}
+            />
+            <TouchableOpacity onPress={handleSkipRating} style={styles.skipRatingBtn}>
+              <Text style={styles.skipRatingText}>Skip</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -711,6 +813,56 @@ const styles = StyleSheet.create({
   },
   fareConfirmButton: {
     width: '100%',
+  },
+  ratingModal: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 22,
+    width: '88%',
+    maxWidth: 360,
+    alignItems: 'center',
+  },
+  ratingTitle: {
+    color: '#0F172A',
+    fontSize: 20,
+    fontWeight: '700',
+  },
+  ratingSubtitle: {
+    color: '#64748B',
+    fontSize: 14,
+    marginTop: 8,
+    marginBottom: 16,
+  },
+  starsRow: {
+    flexDirection: 'row',
+    gap: 6,
+    marginBottom: 20,
+  },
+  starGlyph: {
+    fontSize: 40,
+    color: '#FBBF24',
+  },
+  ratingSubmitButton: {
+    width: '100%',
+    marginBottom: 8,
+  },
+  skipRatingBtn: {
+    paddingVertical: 10,
+  },
+  skipRatingText: {
+    color: '#64748B',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  tierPill: {
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  tierPillText: {
+    fontSize: 11,
+    fontWeight: '800',
   },
   driverCard: {
     position: 'absolute',

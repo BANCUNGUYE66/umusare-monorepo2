@@ -1,5 +1,6 @@
 import React from 'react';
 import { StyleSheet, View, Text, TouchableOpacity, Platform } from 'react-native';
+import { DRIVER_TIER_RULES, tierAccentColor, tierDisplayName } from '../../../../packages/shared-logic/driverTier';
 import type { Profile } from '../../../../packages/shared-logic/types';
 
 interface ProfileScreenProps {
@@ -27,9 +28,34 @@ export default function ProfileScreen({ profile, email, onSignOut }: ProfileScre
         {[profile.car_model, profile.plate_number].filter(Boolean).join(' • ') || '—'}
       </Text>
 
+      <Text style={styles.label}>Driver tier</Text>
+      <View style={styles.tierRow}>
+        <View
+          style={[
+            styles.tierBadge,
+            { borderColor: tierAccentColor(profile.driver_tier) },
+          ]}
+        >
+          <Text style={[styles.tierBadgeText, { color: tierAccentColor(profile.driver_tier) }]}>
+            {tierDisplayName(profile.driver_tier)}
+          </Text>
+        </View>
+      </View>
+      <Text style={styles.tierHint}>
+        Silver: {DRIVER_TIER_RULES.silver.minTrips}+ trips & ≥{DRIVER_TIER_RULES.silver.minRating}{' '}
+        stars avg · Gold: {DRIVER_TIER_RULES.gold.minTrips}+ & ≥{DRIVER_TIER_RULES.gold.minRating} ·
+        Diamond: {DRIVER_TIER_RULES.diamond.minTrips}+ & ≥{DRIVER_TIER_RULES.diamond.minRating}
+      </Text>
+
+      <Text style={styles.label}>Trips completed</Text>
+      <Text style={styles.value}>{profile.completed_trips_count ?? 0}</Text>
+
       <Text style={styles.label}>Rating</Text>
       <Text style={styles.value}>
         {profile.rating != null ? `⭐ ${profile.rating.toFixed(1)}` : '—'}
+        {profile.rating_count != null && profile.rating_count > 0
+          ? ` (${profile.rating_count} reviews)`
+          : ''}
       </Text>
 
       <Text style={styles.label}>Role</Text>
@@ -64,6 +90,26 @@ const styles = StyleSheet.create({
     color: '#F5F5F5',
     fontSize: 18,
     marginBottom: 20,
+  },
+  tierRow: {
+    marginBottom: 8,
+  },
+  tierBadge: {
+    alignSelf: 'flex-start',
+    borderWidth: 1.5,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  tierBadgeText: {
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  tierHint: {
+    color: '#9CA3AF',
+    fontSize: 11,
+    lineHeight: 15,
+    marginBottom: 18,
   },
   signOutButton: {
     marginTop: 32,

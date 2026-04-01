@@ -7,12 +7,21 @@ import {
   Modal,
   Platform,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { supabaseClient } from '../lib/supabaseClient';
 import DriverTrackingScreen from './DriverTrackingScreen';
 import type { Trip } from '../../../../packages/shared-logic/types';
 
 const GOOGLE_GEOCODE_URL = 'https://maps.googleapis.com/maps/api/geocode/json';
+
+/** Only consider very recent requests; older pendings are ignored in the UI */
+const PENDING_MAX_AGE_MS = 20 * 60 * 1000;
+
+function isRecentPendingTrip(trip: Trip): boolean {
+  if (!trip.created_at) return true;
+  return Date.now() - new Date(trip.created_at).getTime() <= PENDING_MAX_AGE_MS;
+}
 
 async function reverseGeocode(
   lat: number,
@@ -59,20 +68,37 @@ export default function DriverDashboard({ isOnline, offlineReason }: DriverDashb
     }
   }, []);
 
+  const loadPendingTrips = useCallback(async () => {
+    const cutoff = new Date(Date.now() - PENDING_MAX_AGE_MS).toISOString();
+    const { data, error } = await supabaseClient
+      .from('trips')
+      .select('*')
+      .eq('status', 'pending')
+      .gte('created_at', cutoff)
+      .order('created_at', { ascending: false })
+      .limit(1);
+    if (error) {
+      console.warn('[DriverDashboard] load pending trips:', error.message);
+      return;
+    }
+    const row = (data as Trip[] | null)?.[0];
+    if (row && isRecentPendingTrip(row)) {
+      setPendingTrips([row]);
+    } else {
+      setPendingTrips([]);
+    }
+  }, []);
+
   useEffect(() => {
     if (!isOnline) {
       setPendingTrips([]);
       return;
     }
 
-    const fetchInitial = async () => {
-      const { data, error } = await supabaseClient
-        .from('trips')
-        .select('*')
-        .eq('status', 'pending');
-      if (!error && data) setPendingTrips(data as Trip[]);
-    };
-    fetchInitial();
+    loadPendingTrips();
+
+    // Backup if realtime misses an event (network / RLS / channel lag)
+    const poll = setInterval(loadPendingTrips, 10000);
 
     const channel = supabaseClient
       .channel('trips-pending')
@@ -81,11 +107,15 @@ export default function DriverDashboard({ isOnline, offlineReason }: DriverDashb
         { event: 'INSERT', schema: 'public', table: 'trips' },
         (payload) => {
           const trip = payload.new as Trip;
-          if (trip.status === 'pending') {
-            setPendingTrips((prev) =>
-              prev.some((t) => t.id === trip.id) ? prev : [...prev, trip]
-            );
-          }
+          if (trip.status !== 'pending') return;
+          if (!isRecentPendingTrip(trip)) return;
+          setPendingTrips((prev) => {
+            if (prev.length === 0) return [trip];
+            const a = new Date(trip.created_at || 0).getTime();
+            const b = new Date(prev[0].created_at || 0).getTime();
+            if (trip.id === prev[0].id) return [trip];
+            return a >= b ? [trip] : prev;
+          });
         }
       )
       .on(
@@ -93,19 +123,33 @@ export default function DriverDashboard({ isOnline, offlineReason }: DriverDashb
         { event: 'UPDATE', schema: 'public', table: 'trips' },
         (payload) => {
           const updated = payload.new as Trip;
-          if (updated.status !== 'pending') {
-            setPendingTrips((prev) => prev.filter((t) => t.id !== updated.id));
+          if (updated.status === 'pending') {
+            if (!isRecentPendingTrip(updated as Trip)) {
+              setPendingTrips([]);
+              return;
+            }
+            setPendingTrips((prev) => {
+              if (prev.length === 0 || prev[0].id === updated.id) {
+                return [updated as Trip];
+              }
+              const a = new Date((updated as Trip).created_at || 0).getTime();
+              const b = new Date(prev[0].created_at || 0).getTime();
+              return a >= b ? [updated as Trip] : prev;
+            });
+            return;
           }
+          setPendingTrips((prev) => prev.filter((t) => t.id !== updated.id));
         }
       )
       .subscribe();
 
     return () => {
+      clearInterval(poll);
       supabaseClient.removeChannel(channel);
     };
-  }, [isOnline]);
+  }, [isOnline, loadPendingTrips]);
 
-  const latestPendingTrip = pendingTrips[pendingTrips.length - 1] ?? null;
+  const latestPendingTrip = pendingTrips[0] ?? null;
 
   useEffect(() => {
     if (latestPendingTrip) {
@@ -128,14 +172,40 @@ export default function DriverDashboard({ isOnline, offlineReason }: DriverDashb
     }
 
     setAcceptingId(trip.id);
-    const { error } = await supabaseClient
-      .from('trips')
-      .update({ status: 'active', driver_id: userId })
-      .eq('id', trip.id);
+    let { error } = await supabaseClient.rpc('accept_trip_with_priority', {
+      p_trip_id: trip.id,
+    });
+
+    if (error) {
+      const msg = error.message || '';
+      const tryDirect =
+        msg.includes('No eligible') ||
+        msg.includes('matching') ||
+        msg.includes('schema cache');
+
+      if (tryDirect) {
+        const direct = await supabaseClient
+          .from('trips')
+          .update({ status: 'active', driver_id: userId })
+          .eq('id', trip.id)
+          .eq('status', 'pending')
+          .select('id')
+          .maybeSingle();
+        error = direct.error;
+        if (!error && !direct.data) {
+          error = { message: 'Trip was already taken or is no longer pending.' } as any;
+        }
+      }
+    }
 
     setAcceptingId(null);
     if (error) {
       console.error('Accept error:', error);
+      Alert.alert(
+        'Could not accept',
+        (error as { message?: string }).message ||
+          'Another driver may have higher priority for this trip.'
+      );
       return;
     }
     setPendingTrips((prev) => prev.filter((t) => t.id !== trip.id));
