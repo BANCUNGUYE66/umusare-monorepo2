@@ -6,7 +6,7 @@ Predictive health-tech and ride-hailing platform for East Africa.
 🏗 Project Structure
 apps/client: Rider app (iPhone 14 Pro Max / iOS).
 
-apps/driver-app: Driver app (Android).
+apps/driver-app: Driver app (iPhone 14 Pro Max / iOS).
 
 packages/shared-logic: Supabase client, shared types, and fee logic.
 
