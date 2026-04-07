@@ -9,32 +9,23 @@ import {
   Alert,
   Modal,
   Animated,
+  Linking,
 } from 'react-native';
 import MapView, { PROVIDER_DEFAULT, Marker } from 'react-native-maps';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabaseClient } from '../lib/supabaseClient';
 import SwipeButton from '../components/SwipeButton';
+import GlassSurface from '../components/GlassSurface';
 import type { Trip } from '../../../../packages/shared-logic/types';
 
-// Custom map style (Silver) for a clean minimalist look.
-const MAP_STYLE_SILVER = [
-  { elementType: 'geometry', stylers: [{ color: '#f5f5f5' }] },
+const MAP_STYLE_GLASS = [
+  { elementType: 'geometry', stylers: [{ color: '#f0f2f5' }] },
   { elementType: 'labels.icon', stylers: [{ visibility: 'off' }] },
-  { elementType: 'labels.text.fill', stylers: [{ color: '#616161' }] },
-  { elementType: 'labels.text.stroke', stylers: [{ color: '#f5f5f5' }] },
-  {
-    featureType: 'administrative.land_parcel',
-    elementType: 'labels.text.fill',
-    stylers: [{ color: '#bdbdbd' }],
-  },
-  { featureType: 'poi', elementType: 'geometry', stylers: [{ color: '#eeeeee' }] },
-  { featureType: 'poi', elementType: 'labels.text.fill', stylers: [{ color: '#757575' }] },
+  { elementType: 'labels.text.fill', stylers: [{ color: '#6b7280' }] },
+  { elementType: 'labels.text.stroke', stylers: [{ color: '#f0f2f5' }] },
   { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#ffffff' }] },
-  { featureType: 'road.arterial', elementType: 'labels.text.fill', stylers: [{ color: '#757575' }] },
-  { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#dadada' }] },
-  { featureType: 'road.highway', elementType: 'labels.text.fill', stylers: [{ color: '#616161' }] },
-  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#d8d8d8' }] },
-  { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#9e9e9e' }] },
+  { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#e8eaef' }] },
+  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#dde3ea' }] },
 ] as any;
 
 interface DriverTrackingScreenProps {
@@ -53,6 +44,52 @@ export default function DriverTrackingScreen({ trip, onComplete }: DriverTrackin
   const confirmScale = useRef(new Animated.Value(0.8)).current;
   const confirmOpacity = useRef(new Animated.Value(0)).current;
   const insets = useSafeAreaInsets();
+  const [clientPhone, setClientPhone] = useState<string | null>(null);
+  const [clientName, setClientName] = useState<string | null>(null);
+  const [vehicleLabel, setVehicleLabel] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data: sessionData } = await supabaseClient.auth.getSession();
+      const uid = sessionData?.session?.user?.id;
+      if (!uid || !trip.client_id) return;
+      const [{ data: clientRow }, { data: meRow }] = await Promise.all([
+        supabaseClient
+          .from('profiles')
+          .select('phone, full_name')
+          .eq('id', trip.client_id)
+          .single(),
+        supabaseClient
+          .from('profiles')
+          .select('car_model, plate_number')
+          .eq('id', uid)
+          .single(),
+      ]);
+      if (cancelled) return;
+      if (clientRow) {
+        setClientPhone((clientRow as { phone?: string }).phone ?? null);
+        setClientName((clientRow as { full_name?: string }).full_name ?? null);
+      }
+      if (meRow) {
+        const m = (meRow as { car_model?: string }).car_model;
+        const p = (meRow as { plate_number?: string }).plate_number;
+        const parts = [m, p].filter(Boolean);
+        setVehicleLabel(parts.length ? parts.join(' · ') : null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [trip.client_id, trip.id]);
+
+  const dialPhone = (raw: string) => {
+    const digits = raw.replace(/\D/g, '');
+    const uri = digits.startsWith('250') ? `tel:+${digits}` : `tel:+250${digits}`;
+    Linking.openURL(uri).catch(() => {
+      Alert.alert('Cannot call', 'Unable to place call.');
+    });
+  };
 
   const handleCancelTrip = () => {
     Alert.alert(
@@ -287,7 +324,7 @@ export default function DriverTrackingScreen({ trip, onComplete }: DriverTrackin
         provider={PROVIDER_DEFAULT}
         style={StyleSheet.absoluteFillObject}
         initialRegion={initialRegion}
-        customMapStyle={MAP_STYLE_SILVER}
+        customMapStyle={MAP_STYLE_GLASS}
         showsUserLocation={true}
       >
         {pickupLocation && (
@@ -305,23 +342,47 @@ export default function DriverTrackingScreen({ trip, onComplete }: DriverTrackin
           />
         )}
       </MapView>
-      <View style={[styles.banner, { bottom: insets.bottom + (Platform.OS === 'ios' ? 16 : 24) }]}>
+      <GlassSurface
+        style={[
+          styles.banner,
+          { bottom: insets.bottom + (Platform.OS === 'ios' ? 16 : 24) },
+        ]}
+      >
         <Text style={styles.bannerText}>
           {tripStatus === 'active'
-            ? 'Heading to client — Meet at pickup location'
+            ? 'Heading to client — meet at pickup'
             : tripStatus === 'arrived'
               ? 'Client reached — ready to start trip'
-                : tripStatus === 'ongoing'
-                  ? 'Trip ongoing — slide when at destination'
-                  : 'Trip ended — confirm settlement below'}
+              : tripStatus === 'ongoing'
+                ? 'Trip ongoing — slide when at destination'
+                : 'Trip ended — confirm settlement below'}
         </Text>
+        {vehicleLabel ? (
+          <Text style={styles.vehicleLine} numberOfLines={2}>
+            Vehicle: {vehicleLabel}
+          </Text>
+        ) : null}
+        <View style={styles.clientBlock}>
+          <Text style={styles.clientNameLine} numberOfLines={1}>
+            Client{clientName ? `: ${clientName}` : ''}
+          </Text>
+          {clientPhone ? (
+            <TouchableOpacity onPress={() => dialPhone(clientPhone)} activeOpacity={0.85}>
+              <Text style={styles.clientPhoneLine}>📱 {clientPhone} · Tap to call</Text>
+            </TouchableOpacity>
+          ) : (
+            <Text style={styles.clientMuted}>Client phone not on file</Text>
+          )}
+        </View>
         <Text style={styles.amountText}>
           Gross: {Number(tripData.final_fare ?? tripData.base_fee ?? 0).toLocaleString()} RWF
           {'  '}|{'  '}
-          Commission (15%): {Math.round(Number(tripData.final_fare ?? tripData.base_fee ?? 0) * 0.15).toLocaleString()} RWF
+          Commission (15%):{' '}
+          {Math.round(Number(tripData.final_fare ?? tripData.base_fee ?? 0) * 0.15).toLocaleString()}{' '}
+          RWF
         </Text>
         {updating ? (
-          <ActivityIndicator size="small" color="#F5F5F5" />
+          <ActivityIndicator size="small" color="#2563EB" />
         ) : (
           <SwipeButton
             label={swipeLabel}
@@ -335,12 +396,12 @@ export default function DriverTrackingScreen({ trip, onComplete }: DriverTrackin
           disabled={cancelling || updating}
         >
           {cancelling ? (
-            <ActivityIndicator size="small" color="#F5F5F5" />
+            <ActivityIndicator size="small" color="#dc2626" />
           ) : (
-            <Text style={styles.cancelButtonText}>Cancel Trip</Text>
+            <Text style={styles.cancelButtonText}>Cancel trip</Text>
           )}
         </TouchableOpacity>
-      </View>
+      </GlassSurface>
 
       <Modal visible={paymentModalVisible} transparent animationType="slide">
         <View style={styles.modalOverlay}>
@@ -393,32 +454,70 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 16,
     right: 16,
-    backgroundColor: '#142850',
     paddingVertical: 16,
-    paddingHorizontal: 20,
-    borderRadius: 12,
+    paddingHorizontal: 18,
+    borderRadius: 22,
     alignItems: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.85)',
   },
   bannerText: {
-    color: '#F5F5F5',
+    color: '#0f172a',
     fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 12,
+    fontWeight: '700',
+    marginBottom: 10,
+    textAlign: 'center',
+    lineHeight: 22,
   },
-  amountText: {
-    color: '#D1D5DB',
-    fontSize: 12,
+  vehicleLine: {
+    color: '#334155',
+    fontSize: 14,
+    fontWeight: '600',
     marginBottom: 8,
     textAlign: 'center',
+    width: '100%',
+  },
+  clientBlock: {
+    width: '100%',
+    marginBottom: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    backgroundColor: 'rgba(248,250,252,0.95)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(226,232,240,0.95)',
+  },
+  clientNameLine: {
+    color: '#0f172a',
+    fontSize: 14,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  clientPhoneLine: {
+    color: '#2563EB',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  clientMuted: {
+    color: '#94a3b8',
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  amountText: {
+    color: '#64748B',
+    fontSize: 12,
+    marginBottom: 10,
+    textAlign: 'center',
+    lineHeight: 18,
   },
   cancelButton: {
-    paddingVertical: 8,
+    paddingVertical: 10,
     paddingHorizontal: 16,
   },
   cancelButtonText: {
-    color: '#f87171',
+    color: '#dc2626',
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   modalOverlay: {
     flex: 1,

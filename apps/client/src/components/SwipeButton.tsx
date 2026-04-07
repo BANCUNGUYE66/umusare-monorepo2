@@ -1,0 +1,138 @@
+import React, { useMemo, useRef } from 'react';
+import { Animated, PanResponder, StyleSheet, Text, View } from 'react-native';
+
+interface SwipeButtonProps {
+  label: string;
+  onSwipeSuccess: () => Promise<void> | void;
+  disabled?: boolean;
+  /** 'glass' uses a softer track for light sheets */
+  variant?: 'primary' | 'glass';
+}
+
+const KNOB_SIZE = 52;
+
+export default function SwipeButton({
+  label,
+  onSwipeSuccess,
+  disabled = false,
+  variant = 'primary',
+}: SwipeButtonProps) {
+  const translateX = useRef(new Animated.Value(0)).current;
+  const trackWidth = useRef(0);
+  const busy = useRef(false);
+
+  const maxTranslate = () => Math.max(0, trackWidth.current - KNOB_SIZE - 6);
+
+  const resetKnob = () => {
+    Animated.spring(translateX, {
+      toValue: 0,
+      useNativeDriver: true,
+      bounciness: 6,
+    }).start();
+  };
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => !disabled && !busy.current,
+        onMoveShouldSetPanResponder: () => !disabled && !busy.current,
+        onPanResponderMove: (_, gesture) => {
+          const x = Math.max(0, Math.min(maxTranslate(), gesture.dx));
+          translateX.setValue(x);
+        },
+        onPanResponderRelease: async (_, gesture) => {
+          const threshold = maxTranslate() * 0.8;
+          if (gesture.dx >= threshold && !busy.current) {
+            busy.current = true;
+            Animated.timing(translateX, {
+              toValue: maxTranslate(),
+              duration: 120,
+              useNativeDriver: true,
+            }).start();
+
+            try {
+              await onSwipeSuccess();
+            } finally {
+              busy.current = false;
+              resetKnob();
+            }
+            return;
+          }
+          resetKnob();
+        },
+      }),
+    [disabled, onSwipeSuccess, translateX]
+  );
+
+  return (
+    <View
+      style={[
+        styles.track,
+        variant === 'glass' && styles.trackGlass,
+        disabled && styles.trackDisabled,
+      ]}
+      onLayout={(event) => {
+        trackWidth.current = event.nativeEvent.layout.width;
+      }}
+    >
+      <Text style={[styles.label, variant === 'glass' && styles.labelGlass]}>{label}</Text>
+      <Animated.View
+        style={[styles.knob, variant === 'glass' && styles.knobGlass, { transform: [{ translateX }] }]}
+        {...panResponder.panHandlers}
+      >
+        <Text style={[styles.knobArrow, variant === 'glass' && styles.knobArrowGlass]}>→</Text>
+      </Animated.View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  track: {
+    width: '100%',
+    height: 56,
+    borderRadius: 999,
+    backgroundColor: '#2563EB',
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+    overflow: 'hidden',
+  },
+  trackGlass: {
+    backgroundColor: 'rgba(37, 99, 235, 0.92)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.35)',
+  },
+  trackDisabled: {
+    opacity: 0.5,
+  },
+  label: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
+    textAlign: 'center',
+    paddingHorizontal: KNOB_SIZE + 8,
+  },
+  labelGlass: {
+    color: 'rgba(255,255,255,0.98)',
+  },
+  knob: {
+    position: 'absolute',
+    left: 3,
+    width: KNOB_SIZE,
+    height: KNOB_SIZE,
+    borderRadius: KNOB_SIZE / 2,
+    backgroundColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  knobGlass: {
+    backgroundColor: '#f8fafc',
+  },
+  knobArrow: {
+    fontSize: 22,
+    color: '#2563EB',
+    fontWeight: '700',
+  },
+  knobArrowGlass: {
+    color: '#1d4ed8',
+  },
+});

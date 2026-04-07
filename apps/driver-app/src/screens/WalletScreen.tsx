@@ -7,8 +7,9 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabaseClient } from '../lib/supabaseClient';
+import GlassSurface from '../components/GlassSurface';
 
 interface WalletTransaction {
   id: string;
@@ -24,6 +25,7 @@ interface WalletScreenProps {
 }
 
 export default function WalletScreen({ onCommissionCleared }: WalletScreenProps) {
+  const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(true);
   const [walletBalance, setWalletBalance] = useState(0);
   const [commissionDue, setCommissionDue] = useState(0);
@@ -84,160 +86,189 @@ export default function WalletScreen({ onCommissionCleared }: WalletScreenProps)
   };
 
   return (
-    <View style={styles.container}>
-      <LinearGradient
-        colors={['#0047AB', '#142850']}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.card}
-      >
-        <Text style={styles.balanceLabel}>Wallet Balance</Text>
-        <Text style={styles.balanceValue}>{walletBalance.toLocaleString()} RWF</Text>
-      </LinearGradient>
+    <View style={styles.root}>
+      <FlatList
+        data={transactions}
+        keyExtractor={(item) => item.id}
+        contentContainerStyle={[
+          styles.listContent,
+          { paddingTop: 56, paddingBottom: insets.bottom + 100 },
+        ]}
+        ListHeaderComponent={
+          <>
+            <Text style={styles.screenTitle}>Wallet</Text>
+            <Text style={styles.screenSubtitle}>Earnings and commission</Text>
 
-      <View style={styles.commissionCard}>
-        <Text style={styles.commissionLabel}>Commission Due</Text>
-        <Text style={styles.commissionValue}>{commissionDue.toLocaleString()} RWF</Text>
-        <Text style={styles.commissionHint}>
-          Deposit to Mobile Money: 0788 000 111 before taking the next trip.
-        </Text>
-        {commissionDue > 0 ? (
-          <TouchableOpacity
-            style={styles.clearButton}
-            onPress={handleClearCommission}
-            disabled={clearing}
-          >
-            <Text style={styles.clearButtonText}>
-              {clearing ? 'Processing...' : 'I have deposited commission'}
-            </Text>
-          </TouchableOpacity>
-        ) : (
-          <Text style={styles.commissionClearText}>Commission cleared. You can go online.</Text>
-        )}
-      </View>
+            <GlassSurface style={styles.balanceCard}>
+              <Text style={styles.balanceLabel}>Wallet balance</Text>
+              <Text style={styles.balanceValue}>{walletBalance.toLocaleString()} RWF</Text>
+            </GlassSurface>
 
-      <Text style={styles.sectionTitle}>Recent Trips</Text>
-      {loading ? (
-        <ActivityIndicator color="#fff" />
-      ) : (
-        <FlatList
-          data={transactions}
-          keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <View style={styles.txRow}>
-              <View>
-                <Text style={styles.txTitle}>Trip {item.trip_id?.slice(0, 8) ?? 'N/A'}</Text>
-                <Text style={styles.txSub}>
-                  Fee {Number(item.commission_fee ?? 0).toLocaleString()} RWF
-                </Text>
-              </View>
-              <Text style={styles.txAmount}>
-                +{Number(item.amount_net ?? 0).toLocaleString()} RWF
+            <GlassSurface style={styles.commissionCard}>
+              <Text style={styles.commissionLabel}>Commission due</Text>
+              <Text style={styles.commissionValue}>{commissionDue.toLocaleString()} RWF</Text>
+              <Text style={styles.commissionHint}>
+                Deposit to Mobile Money: 0788 000 111 before taking the next trip.
+              </Text>
+              {commissionDue > 0 ? (
+                <TouchableOpacity
+                  style={styles.clearButton}
+                  onPress={handleClearCommission}
+                  disabled={clearing}
+                >
+                  <Text style={styles.clearButtonText}>
+                    {clearing ? 'Processing…' : 'I have deposited commission'}
+                  </Text>
+                </TouchableOpacity>
+              ) : (
+                <Text style={styles.commissionClearText}>Commission cleared. You can go online.</Text>
+              )}
+            </GlassSurface>
+
+            <Text style={styles.sectionTitle}>Recent trips</Text>
+            {loading ? (
+              <ActivityIndicator style={styles.loader} color="#2563EB" />
+            ) : null}
+          </>
+        }
+        renderItem={({ item }) => (
+          <GlassSurface style={styles.txRow}>
+            <View>
+              <Text style={styles.txTitle}>Trip {item.trip_id?.slice(0, 8) ?? 'N/A'}</Text>
+              <Text style={styles.txSub}>
+                Fee {Number(item.commission_fee ?? 0).toLocaleString()} RWF
               </Text>
             </View>
-          )}
-          ListEmptyComponent={
+            <Text style={styles.txAmount}>+{Number(item.amount_net ?? 0).toLocaleString()} RWF</Text>
+          </GlassSurface>
+        )}
+        ListEmptyComponent={
+          !loading ? (
             <Text style={styles.empty}>No completed trips yet.</Text>
-          }
-        />
-      )}
+          ) : null
+        }
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  root: {
     flex: 1,
-    backgroundColor: '#0A174E',
-    paddingHorizontal: 16,
-    paddingTop: 12,
+    backgroundColor: '#eef1f6',
   },
-  card: {
-    borderRadius: 18,
+  listContent: {
+    paddingHorizontal: 16,
+  },
+  screenTitle: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#0f172a',
+    letterSpacing: -0.5,
+  },
+  screenSubtitle: {
+    fontSize: 15,
+    color: '#64748B',
+    marginTop: 6,
+    marginBottom: 18,
+  },
+  balanceCard: {
+    borderRadius: 22,
     padding: 20,
-    marginBottom: 20,
+    marginBottom: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(37,99,235,0.2)',
+    backgroundColor: 'rgba(239,246,255,0.9)',
   },
   balanceLabel: {
-    color: '#D1D5DB',
-    fontSize: 14,
+    color: '#64748B',
+    fontSize: 13,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
     marginBottom: 8,
   },
   balanceValue: {
-    color: '#fff',
-    fontSize: 30,
+    color: '#0f172a',
+    fontSize: 32,
     fontWeight: '800',
-  },
-  sectionTitle: {
-    color: '#F5F5F5',
-    fontSize: 18,
-    fontWeight: '700',
-    marginBottom: 12,
   },
   commissionCard: {
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 18,
+    borderRadius: 22,
+    padding: 18,
+    marginBottom: 22,
   },
   commissionLabel: {
-    color: '#9CA3AF',
+    color: '#64748B',
     fontSize: 13,
+    fontWeight: '700',
   },
   commissionValue: {
-    color: '#F59E0B',
-    fontSize: 20,
+    color: '#b45309',
+    fontSize: 24,
     fontWeight: '800',
-    marginTop: 4,
+    marginTop: 6,
   },
   commissionHint: {
-    color: '#E5E7EB',
-    fontSize: 12,
-    marginTop: 8,
-    marginBottom: 10,
+    color: '#64748B',
+    fontSize: 13,
+    marginTop: 10,
+    marginBottom: 12,
+    lineHeight: 18,
   },
   clearButton: {
-    backgroundColor: '#0047AB',
-    borderRadius: 12,
-    paddingVertical: 12,
+    backgroundColor: '#2563EB',
+    borderRadius: 14,
+    paddingVertical: 14,
     alignItems: 'center',
   },
   clearButtonText: {
     color: '#fff',
     fontWeight: '700',
-    fontSize: 13,
+    fontSize: 14,
   },
   commissionClearText: {
-    color: '#22C55E',
-    fontSize: 12,
+    color: '#16a34a',
+    fontSize: 13,
     fontWeight: '600',
+    marginTop: 4,
+  },
+  sectionTitle: {
+    color: '#0f172a',
+    fontSize: 17,
+    fontWeight: '800',
+    marginBottom: 12,
+  },
+  loader: {
+    marginVertical: 16,
   },
   txRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    borderRadius: 12,
+    borderRadius: 16,
     padding: 14,
     marginBottom: 10,
   },
   txTitle: {
-    color: '#F5F5F5',
+    color: '#0f172a',
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   txSub: {
-    color: '#9CA3AF',
+    color: '#64748B',
     fontSize: 12,
     marginTop: 2,
   },
   txAmount: {
-    color: '#22C55E',
-    fontSize: 14,
-    fontWeight: '700',
+    color: '#16a34a',
+    fontSize: 15,
+    fontWeight: '800',
   },
   empty: {
-    color: '#9CA3AF',
+    color: '#64748B',
     fontSize: 14,
     marginTop: 8,
+    marginBottom: 24,
   },
 });

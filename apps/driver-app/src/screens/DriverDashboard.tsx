@@ -4,12 +4,15 @@ import {
   View,
   Text,
   TouchableOpacity,
+  Pressable,
   Modal,
-  Platform,
   ActivityIndicator,
   Alert,
+  ScrollView,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabaseClient } from '../lib/supabaseClient';
+import GlassSurface from '../components/GlassSurface';
 import DriverTrackingScreen from './DriverTrackingScreen';
 import type { Trip } from '../../../../packages/shared-logic/types';
 
@@ -40,14 +43,24 @@ async function reverseGeocode(
 interface DriverDashboardProps {
   isOnline: boolean;
   offlineReason?: string;
+  onActiveTripChange?: (active: boolean) => void;
 }
 
-export default function DriverDashboard({ isOnline, offlineReason }: DriverDashboardProps) {
+export default function DriverDashboard({
+  isOnline,
+  offlineReason,
+  onActiveTripChange,
+}: DriverDashboardProps) {
+  const insets = useSafeAreaInsets();
   const [pendingTrips, setPendingTrips] = useState<Trip[]>([]);
   const [acceptingId, setAcceptingId] = useState<string | null>(null);
   const [activeTrip, setActiveTrip] = useState<Trip | null>(null);
   const [pickupAddress, setPickupAddress] = useState<string | null>(null);
   const [loadingAddress, setLoadingAddress] = useState(false);
+
+  useEffect(() => {
+    onActiveTripChange?.(!!activeTrip);
+  }, [activeTrip, onActiveTripChange]);
 
   const fetchAddress = useCallback(async (trip: Trip) => {
     if (trip.client_lat == null || trip.client_lng == null) {
@@ -97,7 +110,6 @@ export default function DriverDashboard({ isOnline, offlineReason }: DriverDashb
 
     loadPendingTrips();
 
-    // Backup if realtime misses an event (network / RLS / channel lag)
     const poll = setInterval(loadPendingTrips, 10000);
 
     const channel = supabaseClient
@@ -227,122 +239,172 @@ export default function DriverDashboard({ isOnline, offlineReason }: DriverDashb
   }
 
   const hasPendingMission = !!latestPendingTrip;
+  const bottomPad = Math.max(insets.bottom, 16) + 96;
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Driver Dashboard</Text>
-      <Text style={styles.subtitle}>
+    <ScrollView
+      style={styles.scroll}
+      contentContainerStyle={[
+        styles.scrollContent,
+        { paddingTop: 56, paddingBottom: bottomPad },
+      ]}
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator={false}
+    >
+      <Text style={styles.screenTitle}>Dashboard</Text>
+      <Text style={styles.screenSubtitle}>
         {!isOnline
-          ? offlineReason || 'Offline — mission intake paused'
+          ? offlineReason || 'You are offline — turn on to receive missions'
           : hasPendingMission
             ? 'New mission available'
-            : 'Waiting for missions...'}
+            : 'Waiting for missions…'}
       </Text>
 
-      <Modal
-        visible={hasPendingMission}
-        transparent
-        animationType="slide"
-      >
+      <GlassSurface style={styles.card}>
+        <Text style={styles.cardHint}>
+          {isOnline
+            ? 'Stay online to get ride requests near you.'
+            : 'Go online from the bar below when you are ready to drive.'}
+        </Text>
+      </GlassSurface>
+
+      <Modal visible={hasPendingMission} transparent animationType="slide">
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>New Mission</Text>
+          <Pressable style={styles.modalDim} onPress={handleDecline} />
+          <GlassSurface
+            style={[
+              styles.modalSheet,
+              { paddingBottom: Math.max(insets.bottom, 16) + 16 },
+            ]}
+          >
+            <View style={styles.sheetHandle} />
+            <Text style={styles.modalTitle}>New mission</Text>
             <Text style={styles.fee}>
               {latestPendingTrip?.base_fee.toLocaleString() ?? 0} RWF
             </Text>
-            <Text style={styles.feeLabel}>Base fee</Text>
+            <Text style={styles.feeLabel}>Estimated fare</Text>
             <View style={styles.pickupRow}>
-              <Text style={styles.pickupLabel}>Pickup:</Text>
+              <Text style={styles.pickupLabel}>Pickup</Text>
               {loadingAddress ? (
-                <ActivityIndicator size="small" color="#00C851" />
+                <ActivityIndicator size="small" color="#2563EB" />
               ) : (
-                <Text style={styles.pickupAddress} numberOfLines={2}>
-                  {pickupAddress ?? 'Loading...'}
+                <Text style={styles.pickupAddress} numberOfLines={3}>
+                  {pickupAddress ?? 'Loading…'}
                 </Text>
               )}
             </View>
             <View style={styles.modalButtons}>
-              <TouchableOpacity
-                style={styles.declineButton}
-                onPress={handleDecline}
-              >
+              <TouchableOpacity style={styles.declineButton} onPress={handleDecline}>
                 <Text style={styles.declineButtonText}>Decline</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.acceptButton, acceptingId === latestPendingTrip?.id && styles.acceptButtonDisabled]}
+                style={[
+                  styles.acceptButton,
+                  acceptingId === latestPendingTrip?.id && styles.acceptButtonDisabled,
+                ]}
                 onPress={() => latestPendingTrip && handleAcceptMission(latestPendingTrip)}
                 disabled={acceptingId === latestPendingTrip?.id}
               >
                 <Text style={styles.acceptButtonText}>
-                  {acceptingId === latestPendingTrip?.id ? 'Accepting...' : 'Accept'}
+                  {acceptingId === latestPendingTrip?.id ? 'Accepting…' : 'Accept'}
                 </Text>
               </TouchableOpacity>
             </View>
-          </View>
+          </GlassSurface>
         </View>
       </Modal>
-    </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  scroll: {
     flex: 1,
-    backgroundColor: '#0A174E',
-    paddingTop: Platform.OS === 'ios' ? 60 : 48,
+    backgroundColor: '#eef1f6',
+  },
+  scrollContent: {
     paddingHorizontal: 16,
   },
-  title: {
-    color: '#F5F5F5',
-    fontSize: 24,
-    fontWeight: 'bold',
-    marginBottom: 4,
+  screenTitle: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#0f172a',
+    letterSpacing: -0.5,
   },
-  subtitle: {
-    color: '#9CA3AF',
+  screenSubtitle: {
+    fontSize: 15,
+    color: '#64748B',
+    marginTop: 6,
+    marginBottom: 18,
+    lineHeight: 22,
+  },
+  card: {
+    borderRadius: 22,
+    padding: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.85)',
+  },
+  cardHint: {
     fontSize: 14,
-    marginBottom: 24,
+    color: '#64748B',
+    lineHeight: 20,
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'flex-end',
   },
-  modalContent: {
-    backgroundColor: '#142850',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 24,
-    paddingBottom: Platform.OS === 'ios' ? 40 : 24,
+  modalDim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15,23,42,0.4)',
   },
-  modalTitle: {
-    color: '#F5F5F5',
-    fontSize: 20,
-    fontWeight: 'bold',
+  modalSheet: {
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 8,
+  },
+  sheetHandle: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#cbd5e1',
     marginBottom: 16,
   },
+  modalTitle: {
+    color: '#0f172a',
+    fontSize: 20,
+    fontWeight: '800',
+    marginBottom: 12,
+  },
   fee: {
-    color: '#00C851',
-    fontSize: 28,
-    fontWeight: 'bold',
+    color: '#16a34a',
+    fontSize: 32,
+    fontWeight: '800',
     marginBottom: 4,
   },
   feeLabel: {
-    color: '#9CA3AF',
+    color: '#64748B',
     fontSize: 14,
     marginBottom: 16,
+    fontWeight: '600',
   },
   pickupRow: {
-    marginBottom: 24,
+    marginBottom: 22,
   },
   pickupLabel: {
-    color: '#9CA3AF',
-    fontSize: 14,
-    marginBottom: 4,
+    color: '#64748B',
+    fontSize: 12,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 6,
   },
   pickupAddress: {
-    color: '#F5F5F5',
+    color: '#0f172a',
     fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '500',
   },
   modalButtons: {
     flexDirection: 'row',
@@ -351,28 +413,30 @@ const styles = StyleSheet.create({
   declineButton: {
     flex: 1,
     paddingVertical: 14,
-    borderRadius: 8,
+    borderRadius: 14,
     alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.15)',
+    backgroundColor: 'rgba(241,245,249,0.95)',
+    borderWidth: 1,
+    borderColor: 'rgba(226,232,240,0.95)',
   },
   declineButtonText: {
-    color: '#F5F5F5',
+    color: '#475569',
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   acceptButton: {
     flex: 1,
     paddingVertical: 14,
-    borderRadius: 8,
+    borderRadius: 14,
     alignItems: 'center',
-    backgroundColor: '#00C851',
+    backgroundColor: '#16a34a',
   },
   acceptButtonDisabled: {
-    opacity: 0.6,
+    opacity: 0.65,
   },
   acceptButtonText: {
     color: '#fff',
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '800',
   },
 });

@@ -12,6 +12,10 @@ export interface Profile {
   email?: string;
   car_model?: string;
   plate_number?: string;
+  /** HTTPS URL to profile photo (e.g. Supabase Storage public URL). */
+  avatar_url?: string;
+  /** Driver licence categories, e.g. "B, D". */
+  license_categories?: string;
   wallet_balance?: number;
   commission_due?: number;
   /** Driver program tier — affects dispatch priority when online */

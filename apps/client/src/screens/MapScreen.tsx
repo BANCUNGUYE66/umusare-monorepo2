@@ -8,19 +8,23 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Modal,
+  Pressable,
   Keyboard,
   Linking,
   Alert,
   Animated,
   Easing,
   Vibration,
+  Image,
 } from 'react-native';
 import MapView, { PROVIDER_DEFAULT, Marker, MapPressEvent } from 'react-native-maps';
 import * as Location from 'expo-location';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabaseClient } from '../lib/supabaseClient';
-import { calculateBaseFee } from '../../../../packages/shared-logic/calculateBaseFee';
+import { calculateTieredFee } from '../../../../packages/shared-logic/calculateBaseFee';
 import { tierAccentColor, tierDisplayName } from '../../../../packages/shared-logic/driverTier';
+import GlassSurface from '../components/GlassSurface';
+import SwipeButton from '../components/SwipeButton';
 import PrimaryButton from '../PrimaryButton';
 import type { Profile } from '../../../../packages/shared-logic/types';
 
@@ -61,7 +65,61 @@ const MAP_STYLE_NIGHT = [
   { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#515c6d' }] },
 ] as any;
 
-const MAP_STYLE = MAP_STYLE_SILVER;
+// Extra-light map for glass UI (pale streets, minimal POI)
+const MAP_STYLE_GLASS = [
+  { elementType: 'geometry', stylers: [{ color: '#f0f2f5' }] },
+  { elementType: 'labels.icon', stylers: [{ visibility: 'off' }] },
+  { elementType: 'labels.text.fill', stylers: [{ color: '#6b7280' }] },
+  { elementType: 'labels.text.stroke', stylers: [{ color: '#f0f2f5' }] },
+  { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#ffffff' }] },
+  { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#e8eaef' }] },
+  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#dde3ea' }] },
+] as any;
+
+const MAP_STYLE = MAP_STYLE_GLASS;
+
+function SearchingRadar() {
+  const pulse = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.timing(pulse, {
+        toValue: 1,
+        duration: 2400,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      })
+    );
+    loop.start();
+    return () => {
+      loop.stop();
+    };
+  }, [pulse]);
+
+  const rings = [0, 1, 2].map((i) => {
+    const scale = pulse.interpolate({
+      inputRange: [0, 1],
+      outputRange: [0.4 + i * 0.35, 2.4 + i * 0.45],
+    });
+    const opacity = pulse.interpolate({
+      inputRange: [0, 0.2, 0.6, 1],
+      outputRange: [0, 0.35 - i * 0.08, 0.12, 0],
+    });
+    return (
+      <Animated.View
+        key={i}
+        style={[
+          styles.radarRing,
+          {
+            opacity,
+            transform: [{ scale }],
+          },
+        ]}
+      />
+    );
+  });
+
+  return <View style={styles.radarWrap}>{rings}</View>;
+}
 
 // Simple Haversine distance in km (rough approximation)
 function distanceKm(
@@ -93,6 +151,15 @@ function estimateMins(
   return Math.max(1, Math.round((km / 0.5))); // ~30 km/h → ~2 min/km
 }
 
+function initialsFromName(name: string | undefined | null): string {
+  if (!name?.trim()) return '?';
+  const parts = name.trim().split(/\s+/);
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  }
+  return name.slice(0, 2).toUpperCase();
+}
+
 async function geocodePlace(query: string, apiKey: string): Promise<{ lat: number; lng: number } | null> {
   const address = query.trim();
   if (!address) return null;
@@ -109,6 +176,9 @@ export default function MapScreen() {
   const insets = useSafeAreaInsets();
   const confirmAnim = useRef(new Animated.Value(0)).current;
   const completionBannerTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const driverWelcomeShownForTripRef = useRef<string | null>(null);
+  const [driverWelcomeSheetVisible, setDriverWelcomeSheetVisible] = useState(false);
+  const [driverAvatarFailed, setDriverAvatarFailed] = useState(false);
   const [pickupLocation, setPickupLocation] = useState<{
     latitude: number;
     longitude: number;
@@ -139,6 +209,8 @@ export default function MapScreen() {
     text: string;
     tone: 'info' | 'success';
   } | null>(null);
+  /** After driver is shown, client confirms the ride with swipe (separate from trip create). */
+  const [rideConfirmed, setRideConfirmed] = useState(false);
 
   useEffect(() => {
     Animated.timing(confirmAnim, {
@@ -205,17 +277,18 @@ export default function MapScreen() {
     }
   };
 
-  const handleConfirmDestination = async () => {
+  const requestTrip = async () => {
     if (!destinationLocation || !pickupLocation) return;
 
     const { data: sessionData } = await supabaseClient.auth.getSession();
     const userId = sessionData?.session?.user?.id;
     if (!userId) {
-      console.error('No authenticated user');
+      Alert.alert('Sign in required', 'Please sign in to request a ride.');
       return;
     }
 
-    const base_fee = calculateBaseFee();
+    const base_fee = calculateTieredFee('standard');
+    setRideConfirmed(false);
 
     const { data: inserted, error } = await supabaseClient
       .from('trips')
@@ -233,6 +306,7 @@ export default function MapScreen() {
 
     if (error) {
       console.error('Trip insert error:', error);
+      Alert.alert('Could not request ride', error.message ?? 'Please try again.');
       return;
     }
 
@@ -247,6 +321,75 @@ export default function MapScreen() {
     setDriverId(null);
     setDriverProfile(null);
     setDriverLocation(null);
+    setRideConfirmed(false);
+    driverWelcomeShownForTripRef.current = null;
+    setDriverWelcomeSheetVisible(false);
+  };
+
+  /** Refetch trip row — catches missed realtime events and ensures driver_id is applied. */
+  useEffect(() => {
+    if (!currentTripId) return;
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabaseClient
+        .from('trips')
+        .select('driver_id, status')
+        .eq('id', currentTripId)
+        .single();
+      if (cancelled || error || !data) return;
+      const row = data as { driver_id?: string | null; status?: string };
+      if (row.driver_id) {
+        setDriverId(row.driver_id);
+        setIsSearching(false);
+      } else if (
+        row.status === 'active' ||
+        row.status === 'arrived' ||
+        row.status === 'ongoing'
+      ) {
+        setIsSearching(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentTripId]);
+
+  /** While searching, poll until driver_id appears (realtime can lag or be missed on some networks). */
+  useEffect(() => {
+    if (!isSearching || !currentTripId) return;
+    const tick = async () => {
+      const { data } = await supabaseClient
+        .from('trips')
+        .select('driver_id, status')
+        .eq('id', currentTripId)
+        .single();
+      const row = data as { driver_id?: string | null; status?: string } | null;
+      if (row?.driver_id) {
+        setDriverId(row.driver_id);
+        setIsSearching(false);
+      }
+    };
+    const interval = setInterval(tick, 2500);
+    tick();
+    return () => clearInterval(interval);
+  }, [isSearching, currentTripId]);
+
+  useEffect(() => {
+    if (!currentTripId || !driverProfile) return;
+    if (driverWelcomeShownForTripRef.current === currentTripId) return;
+    driverWelcomeShownForTripRef.current = currentTripId;
+    setDriverWelcomeSheetVisible(true);
+  }, [currentTripId, driverProfile?.id]);
+
+  useEffect(() => {
+    setDriverAvatarFailed(false);
+  }, [driverId]);
+
+  const confirmRideWithSwipe = () => {
+    setRideConfirmed(true);
+    setDriverWelcomeSheetVisible(false);
+    Vibration.vibrate(220);
+    showStatusBanner('Ride confirmed — your driver is on the way', 'success');
   };
 
   const handleConfirmFare = async () => {
@@ -331,6 +474,10 @@ export default function MapScreen() {
             final_fare?: number;
             base_fee?: number;
           };
+          if (trip.driver_id) {
+            setDriverId(trip.driver_id);
+            setIsSearching(false);
+          }
           if (trip.status === 'arrived') {
             setIsSearching(false);
             Vibration.vibrate(300);
@@ -338,15 +485,9 @@ export default function MapScreen() {
           } else if (trip.status === 'active') {
             setIsSearching(false);
             showStatusBanner('Your Driver is Coming');
-            if (trip.driver_id) {
-              setDriverId(trip.driver_id);
-            }
           } else if (trip.status === 'ongoing') {
             setIsSearching(false);
             showStatusBanner('Trip Started', 'success');
-            if (trip.driver_id) {
-              setDriverId(trip.driver_id);
-            }
           } else if (trip.status === 'cancelled') {
             setSearchOverlayMessage('Searching for Driver...');
             setDriverId(null);
@@ -354,6 +495,7 @@ export default function MapScreen() {
             setDriverLocation(null);
             setCurrentTripId(null);
             setIsSearching(false);
+            setRideConfirmed(false);
             setStatusBanner(null);
             setFareModalVisible(false);
           } else if (trip.status === 'completed') {
@@ -399,7 +541,17 @@ export default function MapScreen() {
         .select('*')
         .eq('id', driverId)
         .single();
-      if (error || !data || !isMounted) return;
+      if (!isMounted) return;
+      if (error || !data) {
+        if (error) {
+          console.warn('[MapScreen] Could not load driver profile:', error.message);
+        }
+        setDriverProfile({
+          id: driverId,
+          full_name: 'Your driver',
+        } as Profile);
+        return;
+      }
       const row = data as any;
       setDriverProfile(row as Profile);
       if (row.location_lat != null && row.location_lng != null) {
@@ -479,6 +631,7 @@ export default function MapScreen() {
     setDriverId(null);
     setDriverProfile(null);
     setDriverLocation(null);
+    setRideConfirmed(false);
     setStatusBanner(null);
     if (completionBannerTimeoutRef.current) {
       clearTimeout(completionBannerTimeoutRef.current);
@@ -511,11 +664,22 @@ export default function MapScreen() {
     .filter(Boolean)
     .join(' • ');
 
+  const driverPhone = (driverProfile as Profile & { phone?: string })?.phone;
+  const licenseCategories = (driverProfile as Profile & { license_categories?: string })
+    ?.license_categories;
+  const driverAvatarUrl = (driverProfile as Profile & { avatar_url?: string })?.avatar_url;
+
   const initialRegion = {
     ...(pickupLocation ?? KIGALI_CENTER),
     latitudeDelta: 0.05,
     longitudeDelta: 0.05,
   };
+
+  /** Hide booking UI as soon as a trip exists, search runs, or a driver is assigned (don’t wait for profile fetch). */
+  const showDestinationChrome =
+    currentTripId == null && !isSearching && driverId == null;
+  /** Below floating app header (padding + glass bar + gap; SafeAreaView already insets the screen). */
+  const statusBannerTop = 60;
 
   return (
     <View style={styles.container}>
@@ -544,126 +708,215 @@ export default function MapScreen() {
         )}
       </MapView>
 
-      <View style={[styles.bottomSheet, { bottom: insets.bottom + 12 }]}>
-        <View style={styles.searchRow}>
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Where to?"
-            placeholderTextColor="#9CA3AF"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            onSubmitEditing={handleSearchSubmit}
-            returnKeyType="search"
-            editable={!isGeocoding}
-          />
-          {isGeocoding ? (
-            <ActivityIndicator size="small" color="#0047AB" />
-          ) : null}
-        </View>
+      {/* City label — reference UI */}
+      <View style={styles.cityLabelWrap} pointerEvents="none">
+        <Text style={styles.cityLabel}>Kigali</Text>
+      </View>
 
-        {destinationLocation && (
-          <Animated.View
-            style={[
-              styles.confirmButtonWrap,
-              {
-                opacity: confirmAnim,
-                transform: [
+      {showDestinationChrome && (
+        <View style={[styles.bottomSheetOuter, { bottom: insets.bottom + 12 }]}>
+          <GlassSurface style={styles.bottomSheet}>
+            <View style={styles.searchRow}>
+              <Text style={styles.searchIcon}>⌕</Text>
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Where to?"
+                placeholderTextColor="#94A3B8"
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                onSubmitEditing={handleSearchSubmit}
+                returnKeyType="search"
+                editable={!isGeocoding}
+              />
+              {isGeocoding ? (
+                <ActivityIndicator size="small" color="#2563EB" />
+              ) : null}
+            </View>
+
+            {destinationLocation && (
+              <Animated.View
+                style={[
+                  styles.confirmButtonWrap,
                   {
-                    translateY: confirmAnim.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [14, 0],
-                    }),
+                    opacity: confirmAnim,
+                    transform: [
+                      {
+                        translateY: confirmAnim.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [14, 0],
+                        }),
+                      },
+                    ],
                   },
-                ],
+                ]}
+              >
+                <Text style={styles.tierSectionLabel}>Estimated fare</Text>
+                <View style={styles.standardFareRow}>
+                  <View style={styles.standardFareLeft}>
+                    <Text style={styles.standardFareEmoji}>🚗</Text>
+                    <Text style={styles.standardFareLabel}>Standard</Text>
+                  </View>
+                  <Text style={styles.standardFareValue}>
+                    {calculateTieredFee('standard').toLocaleString()} RWF
+                  </Text>
+                </View>
+                <Text style={styles.estimateHint}>
+                  Next we&apos;ll find a driver and show them on the map — then you confirm your ride.
+                </Text>
+                <PrimaryButton
+                  label="Find a driver"
+                  onPress={requestTrip}
+                  style={styles.findDriverBtn}
+                />
+              </Animated.View>
+            )}
+          </GlassSurface>
+        </View>
+      )}
+
+      {driverProfile && (
+        <>
+          <View
+            style={[
+              styles.etaChip,
+              {
+                bottom:
+                  insets.bottom +
+                  (rideConfirmed ? 268 : 360),
               },
             ]}
           >
-            <PrimaryButton
-              label="Confirm Destination"
-              onPress={handleConfirmDestination}
-              style={styles.confirmButton}
-            />
-          </Animated.View>
-        )}
-      </View>
-
-      {driverProfile && (
-        <View style={[styles.driverCard, { bottom: insets.bottom + 140 }]}>
-          <View style={styles.driverCardRow}>
-            <View style={styles.driverCardMain}>
-              <View style={styles.driverNameRow}>
-                <Text style={styles.driverName}>
-                  {driverProfile.full_name || 'Your driver'}
-                </Text>
-                {(driverProfile as any).driver_tier &&
-                (driverProfile as any).driver_tier !== 'normal' ? (
-                  <View
-                    style={[
-                      styles.tierPill,
-                      {
-                        borderColor: tierAccentColor((driverProfile as any).driver_tier),
-                      },
-                    ]}
-                  >
-                    <Text
+            <Text style={styles.etaChipLabel}>ETA</Text>
+            <Text style={styles.etaChipValue}>
+              {etaMins} {etaMins === 1 ? 'min' : 'mins'}
+            </Text>
+          </View>
+          <GlassSurface style={[styles.driverCard, { bottom: insets.bottom + 118 }]}>
+            <View style={styles.sheetHandle} />
+            <View style={styles.driverCardRow}>
+              {driverAvatarUrl && !driverAvatarFailed ? (
+                <Image
+                  source={{ uri: driverAvatarUrl }}
+                  style={styles.driverAvatar}
+                  onError={() => setDriverAvatarFailed(true)}
+                />
+              ) : (
+                <View style={styles.driverAvatarPlaceholder}>
+                  <Text style={styles.driverAvatarInitials}>
+                    {initialsFromName(driverProfile.full_name)}
+                  </Text>
+                </View>
+              )}
+              <View style={styles.driverCardMain}>
+                <View style={styles.driverNameRow}>
+                  <Text style={styles.driverName}>
+                    {driverProfile.full_name || 'Your driver'}
+                  </Text>
+                  {(driverProfile as any).driver_tier &&
+                  (driverProfile as any).driver_tier !== 'normal' ? (
+                    <View
                       style={[
-                        styles.tierPillText,
-                        { color: tierAccentColor((driverProfile as any).driver_tier) },
+                        styles.tierPill,
+                        {
+                          borderColor: tierAccentColor((driverProfile as any).driver_tier),
+                        },
                       ]}
                     >
-                      {tierDisplayName((driverProfile as any).driver_tier)}
-                    </Text>
-                  </View>
+                      <Text
+                        style={[
+                          styles.tierPillText,
+                          { color: tierAccentColor((driverProfile as any).driver_tier) },
+                        ]}
+                      >
+                        {tierDisplayName((driverProfile as any).driver_tier)}
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+                {driverPhone ? (
+                  <Text style={styles.driverPhoneText}>📱 {driverPhone}</Text>
+                ) : (
+                  <Text style={styles.driverMetaMuted}>Phone not on file</Text>
+                )}
+                {licenseCategories ? (
+                  <Text style={styles.driverLicenseText}>
+                    Licence: {licenseCategories}
+                  </Text>
                 ) : null}
-                <Text style={styles.etaText}>
+                <Text style={styles.driverSubEta}>
                   Arriving in {etaMins} {etaMins === 1 ? 'min' : 'mins'}
                 </Text>
+                <Text style={styles.driverRating}>
+                  ⭐ {driverProfile.rating?.toFixed(1) ?? '5.0'}
+                </Text>
+                {carDetails ? (
+                  <Text style={styles.carDetails}>{carDetails}</Text>
+                ) : null}
               </View>
-              <Text style={styles.driverRating}>
-                ⭐ {driverProfile.rating?.toFixed(1) ?? '5.0'}
-              </Text>
-              {carDetails ? (
-                <Text style={styles.carDetails}>{carDetails}</Text>
-              ) : null}
+              <TouchableOpacity
+                style={styles.callButton}
+                onPress={handleCallDriver}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.callButtonIcon}>📞</Text>
+              </TouchableOpacity>
             </View>
+            {!rideConfirmed ? (
+              <View style={styles.confirmSwipeWrap}>
+                <SwipeButton
+                  label="Slide to confirm ride"
+                  variant="glass"
+                  onSwipeSuccess={confirmRideWithSwipe}
+                />
+              </View>
+            ) : null}
             <TouchableOpacity
-              style={styles.callButton}
-              onPress={handleCallDriver}
+              style={styles.cancelButton}
+              onPress={handleCancelTrip}
               activeOpacity={0.8}
             >
-              <Text style={styles.callButtonIcon}>📞</Text>
+              <Text style={styles.cancelButtonText}>Cancel Trip</Text>
             </TouchableOpacity>
-          </View>
-          <TouchableOpacity
-            style={styles.cancelButton}
-            onPress={handleCancelTrip}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.cancelButtonText}>Cancel Trip</Text>
-          </TouchableOpacity>
-        </View>
+          </GlassSurface>
+        </>
       )}
 
       {statusBanner && (
-        <View
-          style={[
-            styles.statusBanner,
-            statusBanner.tone === 'success' ? styles.statusBannerSuccess : styles.statusBannerInfo,
-            { top: insets.top + 72 },
-          ]}
-        >
-          <Text style={styles.statusBannerText}>{statusBanner.text}</Text>
+        <View style={[styles.statusBannerOuter, { top: statusBannerTop }]}>
+          <GlassSurface
+            style={[
+              styles.statusBannerGlass,
+              statusBanner.tone === 'success'
+                ? styles.statusBannerGlassSuccess
+                : styles.statusBannerGlassInfo,
+            ]}
+          >
+            <Text
+              style={[
+                styles.statusBannerGlassText,
+                statusBanner.tone === 'success'
+                  ? styles.statusBannerGlassTextSuccess
+                  : styles.statusBannerGlassTextInfo,
+              ]}
+            >
+              {statusBanner.text}
+            </Text>
+          </GlassSurface>
         </View>
       )}
 
-      <Modal visible={isSearching} transparent animationType="fade">
-        <View style={styles.overlay}>
-          <View style={styles.overlayContent}>
-            <ActivityIndicator size="large" color="#fff" />
-            <Text style={styles.overlayText}>{searchOverlayMessage}</Text>
+      {isSearching && (
+        <View style={styles.searchingLayer} pointerEvents="box-none">
+          <SearchingRadar />
+          <View style={[styles.searchingBottomSheet, { paddingBottom: insets.bottom + 20 }]}>
+            <View style={styles.sheetHandle} />
+            <View style={styles.searchingRow}>
+              <ActivityIndicator size="small" color="#64748B" />
+              <Text style={styles.searchingText}>{searchOverlayMessage}</Text>
+            </View>
           </View>
         </View>
-      </Modal>
+      )}
 
       <Modal visible={fareModalVisible} transparent animationType="slide">
         <View style={styles.overlay}>
@@ -716,6 +969,69 @@ export default function MapScreen() {
           </View>
         </View>
       </Modal>
+
+      <Modal
+        visible={driverWelcomeSheetVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setDriverWelcomeSheetVisible(false)}
+      >
+        <View style={styles.tripWelcomeRoot}>
+          <Pressable
+            style={styles.tripWelcomeDim}
+            onPress={() => setDriverWelcomeSheetVisible(false)}
+          />
+          <GlassSurface
+            style={[styles.tripWelcomeSheet, { paddingBottom: insets.bottom + 16 }]}
+          >
+            <View style={styles.sheetHandle} />
+            <Text style={styles.tripWelcomeTitle}>Driver on the way</Text>
+            <View style={styles.tripWelcomeHeadRow}>
+              {driverAvatarUrl && !driverAvatarFailed ? (
+                <Image
+                  source={{ uri: driverAvatarUrl }}
+                  style={styles.tripWelcomeAvatar}
+                  onError={() => setDriverAvatarFailed(true)}
+                />
+              ) : (
+                <View style={styles.tripWelcomeAvatarPh}>
+                  <Text style={styles.tripWelcomeAvatarTxt}>
+                    {initialsFromName(driverProfile?.full_name)}
+                  </Text>
+                </View>
+              )}
+              <View style={styles.tripWelcomeHeadText}>
+                <Text style={styles.tripWelcomeSubtitle}>
+                  {driverProfile?.full_name
+                    ? `${driverProfile.full_name} is heading to you`
+                    : 'Your driver is heading to you'}
+                </Text>
+                {driverPhone ? (
+                  <Text style={styles.tripWelcomePhone}>📱 {driverPhone}</Text>
+                ) : null}
+                {licenseCategories ? (
+                  <Text style={styles.tripWelcomeLicense}>Licence: {licenseCategories}</Text>
+                ) : null}
+              </View>
+            </View>
+            <View style={styles.tripWelcomeFareRow}>
+              <Text style={styles.tripWelcomeFareLabel}>Trip fare</Text>
+              <Text style={styles.tripWelcomeFareValue}>
+                {Number(fareAmount || calculateTieredFee('standard')).toLocaleString()} RWF
+              </Text>
+            </View>
+            <Text style={styles.tripWelcomeHint}>
+              Slide to confirm below when you’re ready. You can follow them on the map.
+            </Text>
+            <PrimaryButton
+              label="Got it"
+              onPress={() => setDriverWelcomeSheetVisible(false)}
+              style={styles.tripWelcomeBtn}
+            />
+          </GlassSurface>
+        </View>
+      </Modal>
+
     </View>
   );
 }
@@ -723,29 +1039,48 @@ export default function MapScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: 'white',
+    backgroundColor: '#eef1f6',
   },
-  bottomSheet: {
+  cityLabelWrap: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: '36%',
+    alignItems: 'center',
+  },
+  cityLabel: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: 'rgba(55,65,81,0.85)',
+    letterSpacing: 0.3,
+  },
+  bottomSheetOuter: {
     position: 'absolute',
     left: 16,
     right: 16,
-    padding: 14,
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 10,
-    elevation: 4,
+    zIndex: 10,
+  },
+  bottomSheet: {
+    borderRadius: 28,
+    paddingVertical: 16,
+    paddingHorizontal: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.7)',
+    overflow: 'hidden',
   },
   searchRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 10,
+  },
+  searchIcon: {
+    fontSize: 18,
+    color: '#94A3B8',
+    fontWeight: '400',
   },
   searchInput: {
     fontSize: 16,
-    color: '#111827',
+    color: '#0f172a',
     padding: 0,
     flex: 1,
   },
@@ -755,24 +1090,227 @@ const styles = StyleSheet.create({
   },
   confirmButtonWrap: {
     width: '100%',
+    marginTop: 4,
+    gap: 12,
+  },
+  estimateHint: {
+    fontSize: 13,
+    color: '#64748B',
+    lineHeight: 18,
+    marginTop: 4,
+    marginBottom: 12,
+    textAlign: 'center',
+    paddingHorizontal: 4,
+  },
+  findDriverBtn: {
+    width: '100%',
+    borderRadius: 16,
+  },
+  confirmSwipeWrap: {
+    width: '100%',
+    marginTop: 12,
+  },
+  tierSectionLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#64748B',
+    marginBottom: 8,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  standardFareRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.95)',
+    borderWidth: 1.5,
+    borderColor: '#2563EB',
+    marginBottom: 4,
+  },
+  standardFareLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  standardFareEmoji: {
+    fontSize: 22,
+  },
+  standardFareLabel: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1e40af',
+  },
+  standardFareValue: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#2563EB',
+  },
+  searchingLayer: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 15,
+    justifyContent: 'flex-end',
+  },
+  radarWrap: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: '32%',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  radarRing: {
+    position: 'absolute',
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    borderWidth: 2,
+    borderColor: 'rgba(37, 99, 235, 0.35)',
+    backgroundColor: 'transparent',
+  },
+  searchingBottomSheet: {
+    backgroundColor: 'rgba(255,255,255,0.94)',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingTop: 8,
+    paddingHorizontal: 20,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(226,232,240,0.9)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.06,
+    shadowRadius: 16,
+    elevation: 12,
+  },
+  sheetHandle: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#cbd5e1',
+    marginBottom: 16,
+  },
+  searchingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingBottom: 8,
+  },
+  searchingText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#475569',
+  },
+  tripWelcomeRoot: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  tripWelcomeDim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15,23,42,0.4)',
+  },
+  tripWelcomeSheet: {
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 22,
+    paddingTop: 8,
+  },
+  tripWelcomeTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#0f172a',
+    marginBottom: 8,
+  },
+  tripWelcomeSubtitle: {
+    fontSize: 16,
+    color: '#475569',
+    lineHeight: 22,
+    marginBottom: 0,
+  },
+  tripWelcomeHeadRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 14,
+    marginBottom: 16,
+  },
+  tripWelcomeAvatar: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#e2e8f0',
+  },
+  tripWelcomeAvatarPh: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: 'rgba(226,232,240,0.95)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(203,213,225,0.9)',
+  },
+  tripWelcomeAvatarTxt: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#475569',
+  },
+  tripWelcomeHeadText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  tripWelcomePhone: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#0f172a',
+    marginTop: 6,
+  },
+  tripWelcomeLicense: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#475569',
+    marginTop: 4,
+  },
+  tripWelcomeFareRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    backgroundColor: 'rgba(248,250,252,0.95)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(226,232,240,0.95)',
+    marginBottom: 12,
+  },
+  tripWelcomeFareLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#64748B',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  tripWelcomeFareValue: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#2563EB',
+  },
+  tripWelcomeHint: {
+    fontSize: 13,
+    color: '#64748B',
+    lineHeight: 18,
+    marginBottom: 16,
+  },
+  tripWelcomeBtn: {
+    width: '100%',
+    borderRadius: 16,
   },
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
+    backgroundColor: 'rgba(15,23,42,0.45)',
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  overlayContent: {
-    backgroundColor: '#142850',
-    padding: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    minWidth: 220,
-  },
-  overlayText: {
-    color: '#fff',
-    fontSize: 16,
-    marginTop: 16,
   },
   fareModal: {
     backgroundColor: '#fff',
@@ -864,29 +1402,96 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '800',
   },
+  etaChip: {
+    position: 'absolute',
+    right: 20,
+    zIndex: 16,
+    backgroundColor: 'rgba(255,255,255,0.95)',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(226,232,240,0.95)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
+    alignItems: 'flex-end',
+  },
+  etaChipLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#64748B',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  etaChipValue: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#0f172a',
+    marginTop: 2,
+  },
   driverCard: {
     position: 'absolute',
     left: 16,
     right: 16,
-    bottom: Platform.OS === 'ios' ? 110 : 90,
-    backgroundColor: 'white',
-    borderRadius: 12,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 6,
-    elevation: 4,
+    borderRadius: 24,
+    paddingTop: 4,
+    paddingBottom: 14,
+    paddingHorizontal: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.75)',
+    overflow: 'hidden',
   },
   driverCardRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    justifyContent: 'space-between',
     marginBottom: 12,
+    gap: 10,
+  },
+  driverAvatar: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#e2e8f0',
+  },
+  driverAvatarPlaceholder: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: 'rgba(226,232,240,0.95)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(203,213,225,0.9)',
+  },
+  driverAvatarInitials: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#475569',
   },
   driverCardMain: {
     flex: 1,
+    minWidth: 0,
+    paddingRight: 4,
+  },
+  driverPhoneText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#0f172a',
+    marginBottom: 4,
+  },
+  driverMetaMuted: {
+    fontSize: 13,
+    color: '#94a3b8',
+    marginBottom: 4,
+  },
+  driverLicenseText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#475569',
+    marginBottom: 6,
   },
   driverNameRow: {
     flexDirection: 'row',
@@ -904,6 +1509,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#059669',
     fontWeight: '500',
+  },
+  driverSubEta: {
+    fontSize: 13,
+    color: '#64748B',
+    fontWeight: '500',
+    marginBottom: 4,
   },
   driverRating: {
     fontSize: 14,
@@ -948,30 +1559,37 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#FBBF24',
   },
-  statusBanner: {
+  statusBannerOuter: {
     position: 'absolute',
     left: 16,
     right: 16,
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 4,
+    zIndex: 18,
     alignItems: 'center',
   },
-  statusBannerInfo: {
-    backgroundColor: '#0047AB',
-    shadowColor: '#0047AB',
+  statusBannerGlass: {
+    borderRadius: 20,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.6)',
+    maxWidth: 420,
   },
-  statusBannerSuccess: {
-    backgroundColor: '#059669',
-    shadowColor: '#059669',
+  statusBannerGlassInfo: {
+    backgroundColor: 'rgba(255,255,255,0.88)',
   },
-  statusBannerText: {
-    color: '#fff',
-    fontSize: 16,
+  statusBannerGlassSuccess: {
+    backgroundColor: 'rgba(236, 253, 245, 0.92)',
+  },
+  statusBannerGlassText: {
+    fontSize: 15,
     fontWeight: '700',
+    textAlign: 'center',
+  },
+  statusBannerGlassTextInfo: {
+    color: '#1d4ed8',
+  },
+  statusBannerGlassTextSuccess: {
+    color: '#047857',
   },
 });
